@@ -20,11 +20,12 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from 'react-router-dom';
-import { Settings as SettingsIcon, Sparkles } from 'lucide-react';
+import { Settings as SettingsIcon, Sparkles, Users } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import MainContent from './components/MainContent';
 import MobileNav from './components/MobileNav';
 import Settings from './components/Settings';
+import TeamsPanel from './components/TeamsPanel';
 import QuickSettingsPanel from './components/QuickSettingsPanel';
 
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -63,6 +64,7 @@ function AppContent() {
   const [loadingProgress, setLoadingProgress] = useState(null); // { phase, current, total, currentProject }
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTeams, setShowTeams] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('agents');
   const [showQuickSettings, setShowQuickSettings] = useState(false);
   const [autoExpandTools, setAutoExpandTools] = useLocalStorage('autoExpandTools', false);
@@ -801,6 +803,7 @@ function AppContent() {
                 loadingProgress={loadingProgress}
                 onRefresh={handleSidebarRefresh}
                 onShowSettings={() => setShowSettings(true)}
+                onShowTeams={() => setShowTeams(true)}
                 updateAvailable={updateAvailable}
                 latestVersion={latestVersion}
                 currentVersion={currentVersion}
@@ -838,6 +841,16 @@ function AppContent() {
                   title={t('versionUpdate.ariaLabels.settings')}
                 >
                   <SettingsIcon className="w-5 h-5 text-muted-foreground hover:text-foreground transition-colors" />
+                </button>
+
+                {/* Teams Icon */}
+                <button
+                  onClick={() => setShowTeams(true)}
+                  className="p-2 hover:bg-accent rounded-md transition-colors duration-200"
+                  aria-label="Teams"
+                  title="Teams"
+                >
+                  <Users className="w-5 h-5 text-muted-foreground hover:text-foreground transition-colors" />
                 </button>
 
                 {/* Update Indicator */}
@@ -974,6 +987,12 @@ function AppContent() {
         onClose={() => setShowSettings(false)}
         projects={projects}
         initialTab={settingsInitialTab}
+      />
+
+      {/* Teams Panel */}
+      <TeamsPanel
+        isOpen={showTeams}
+        onClose={() => setShowTeams(false)}
       />
 
       {/* Version Upgrade Modal */}

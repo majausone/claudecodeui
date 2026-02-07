@@ -180,6 +180,39 @@ export const api = {
       }),
   },
 
+  // Teams endpoints
+  teams: {
+    list: () => authenticatedFetch('/api/teams'),
+    get: (teamName) => authenticatedFetch(`/api/teams/${teamName}`),
+    create: (data) => authenticatedFetch('/api/teams', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+    update: (teamName, data) => authenticatedFetch(`/api/teams/${teamName}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+    delete: (teamName) => authenticatedFetch(`/api/teams/${teamName}`, {
+      method: 'DELETE',
+    }),
+    addAgent: (teamName, agentData) => authenticatedFetch(`/api/teams/${teamName}/agents`, {
+      method: 'POST',
+      body: JSON.stringify(agentData),
+    }),
+    updateAgent: (teamName, agentName, data) => authenticatedFetch(`/api/teams/${teamName}/agents/${agentName}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+    deleteAgent: (teamName, agentName) => authenticatedFetch(`/api/teams/${teamName}/agents/${agentName}`, {
+      method: 'DELETE',
+    }),
+    getAgentTasks: (teamName, agentName) => authenticatedFetch(`/api/teams/${teamName}/agents/${agentName}/tasks`),
+    updateAgentTasks: (teamName, agentName, data) => authenticatedFetch(`/api/teams/${teamName}/agents/${agentName}/tasks`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  },
+
   // Generic GET method for any endpoint
   get: (endpoint) => authenticatedFetch(`/api${endpoint}`),
 };

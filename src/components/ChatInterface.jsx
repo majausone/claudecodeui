@@ -37,6 +37,7 @@ import TokenUsagePie from './TokenUsagePie';
 import { MicButton } from './MicButton.jsx';
 import { api, authenticatedFetch } from '../utils/api';
 import ThinkingModeSelector, { thinkingModes } from './ThinkingModeSelector.jsx';
+import AgentSelector from './AgentSelector.jsx';
 import Fuse from 'fuse.js';
 import CommandMenu from './CommandMenu';
 import { CLAUDE_MODELS, CURSOR_MODELS, CODEX_MODELS } from '../../shared/modelConstants';
@@ -1897,6 +1898,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
   const [attachedImages, setAttachedImages] = useState([]);
   const [uploadingImages, setUploadingImages] = useState(new Map());
   const [imageErrors, setImageErrors] = useState(new Map());
+  const [selectedTeamAgent, setSelectedTeamAgent] = useState(null);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const inputContainerRef = useRef(null);
@@ -5631,7 +5633,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
               aria-hidden="true"
               className="absolute inset-0 pointer-events-none overflow-hidden rounded-2xl"
             >
-              <div className="chat-input-placeholder block w-full pl-12 pr-20 sm:pr-40 py-1.5 sm:py-4 text-transparent text-base leading-6 whitespace-pre-wrap break-words">
+              <div className="chat-input-placeholder block w-full pl-20 pr-20 sm:pr-40 py-1.5 sm:py-4 text-transparent text-base leading-6 whitespace-pre-wrap break-words">
                 {renderInputWithMentions(input)}
               </div>
             </div>
@@ -5660,20 +5662,26 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
               }}
               placeholder={t('input.placeholder', { provider: provider === 'cursor' ? t('messageTypes.cursor') : provider === 'codex' ? t('messageTypes.codex') : t('messageTypes.claude') })}
               disabled={isLoading}
-              className="chat-input-placeholder block w-full pl-12 pr-20 sm:pr-40 py-1.5 sm:py-4 bg-transparent rounded-2xl focus:outline-none text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 disabled:opacity-50 resize-none min-h-[50px] sm:min-h-[80px] max-h-[40vh] sm:max-h-[300px] overflow-y-auto text-base leading-6 transition-all duration-200"
+              className="chat-input-placeholder block w-full pl-20 pr-20 sm:pr-40 py-1.5 sm:py-4 bg-transparent rounded-2xl focus:outline-none text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 disabled:opacity-50 resize-none min-h-[50px] sm:min-h-[80px] max-h-[40vh] sm:max-h-[300px] overflow-y-auto text-base leading-6 transition-all duration-200"
               style={{ height: '50px' }}
             />
-            {/* Image upload button */}
-            <button
-              type="button"
-              onClick={open}
-              className="absolute left-2 top-1/2 transform -translate-y-1/2 p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
-              title={t('input.attachImages')}
-            >
-              <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-            </button>
+            {/* Image upload & Agent selector buttons */}
+            <div className="absolute left-2 top-1/2 transform -translate-y-1/2 flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={open}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                title={t('input.attachImages')}
+              >
+                <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+              </button>
+              <AgentSelector
+                selectedAgent={selectedTeamAgent}
+                onSelectAgent={setSelectedTeamAgent}
+              />
+            </div>
             
             {/* Mic button - HIDDEN */}
             <div className="absolute right-16 sm:right-16 top-1/2 transform -translate-y-1/2" style={{ display: 'none' }}>
@@ -5713,7 +5721,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
             </button>
 
             {/* Hint text inside input box at bottom - Desktop only */}
-            <div className={`absolute bottom-1 left-12 right-14 sm:right-40 text-xs text-gray-400 dark:text-gray-500 pointer-events-none hidden sm:block transition-opacity duration-200 ${
+            <div className={`absolute bottom-1 left-20 right-14 sm:right-40 text-xs text-gray-400 dark:text-gray-500 pointer-events-none hidden sm:block transition-opacity duration-200 ${
               input.trim() ? 'opacity-0' : 'opacity-100'
             }`}>
               {sendByCtrlEnter
