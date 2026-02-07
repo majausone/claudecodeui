@@ -1942,11 +1942,27 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
     return localStorage.getItem('cursor-model') || CURSOR_MODELS.DEFAULT;
   });
   const [claudeModel, setClaudeModel] = useState(() => {
-    return localStorage.getItem('claude-model') || CLAUDE_MODELS.DEFAULT;
+    const stored = localStorage.getItem('claude-model');
+    if (stored) {
+      // Migrate old versioned IDs to generic aliases
+      const migration = {
+        'claude-opus-4-6': 'opus',
+        'claude-sonnet-4-5': 'sonnet',
+        'claude-haiku-4-5': 'haiku'
+      };
+      if (migration[stored]) {
+        localStorage.setItem('claude-model', migration[stored]);
+        return migration[stored];
+      }
+      return stored;
+    }
+    return CLAUDE_MODELS.DEFAULT;
   });
   const [codexModel, setCodexModel] = useState(() => {
     return localStorage.getItem('codex-model') || CODEX_MODELS.DEFAULT;
   });
+  // Resolved (exact) model ID returned by the SDK after a query
+  const [resolvedModelId, setResolvedModelId] = useState(null);
   // Track provider transitions so we only clear approvals when provider truly changes.
   // This does not sync with the backend; it just prevents UI prompts from disappearing.
   const lastProviderRef = useRef(provider);
@@ -3249,7 +3265,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
 
       // Filter messages by session ID to prevent cross-session interference
       // Skip filtering for global messages that apply to all sessions
-      const globalMessageTypes = ['projects_updated', 'taskmaster-project-updated', 'session-created'];
+      const globalMessageTypes = ['projects_updated', 'taskmaster-project-updated', 'session-created', 'model-resolved'];
       const isGlobalMessage = globalMessageTypes.includes(latestMessage.type);
       const lifecycleMessageTypes = new Set([
         'claude-complete',
@@ -3351,6 +3367,13 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
           // Use token budget from WebSocket for active sessions
           if (latestMessage.data) {
             setTokenBudget(latestMessage.data);
+          }
+          break;
+
+        case 'model-resolved':
+          // SDK resolved the generic alias to an exact model ID
+          if (latestMessage.modelId) {
+            setResolvedModelId(latestMessage.modelId);
           }
           break;
 
@@ -5062,19 +5085,25 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
                     {t('providerSelection.selectModel')}
                   </label>
                   {provider === 'claude' ? (
-                    <select
-                      value={claudeModel}
-                      onChange={(e) => {
-                        const newModel = e.target.value;
-                        setClaudeModel(newModel);
-                        localStorage.setItem('claude-model', newModel);
-                      }}
-                      className="pl-4 pr-10 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 min-w-[140px]"
-                    >
-                      {CLAUDE_MODELS.OPTIONS.map(({ value, label }) => (
-                        <option key={value} value={value}>{label}</option>
-                      ))}
-                    </select>
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={claudeModel}
+                        onChange={(e) => {
+                          const newModel = e.target.value;
+                          setClaudeModel(newModel);
+                          localStorage.setItem('claude-model', newModel);
+                          setResolvedModelId(null);
+                        }}
+                        className="pl-4 pr-10 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 min-w-[140px]"
+                      >
+                        {CLAUDE_MODELS.OPTIONS.map(({ value, label }) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                      {resolvedModelId && (
+                        <span className="text-xs text-gray-400 dark:text-gray-500">({resolvedModelId})</span>
+                      )}
+                    </div>
                   ) : provider === 'codex' ? (
                     <select
                       value={codexModel}
@@ -5109,7 +5138,11 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
                 
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   {provider === 'claude'
-                    ? t('providerSelection.readyPrompt.claude', { model: claudeModel })
+                    ? t('providerSelection.readyPrompt.claude', {
+                        model: resolvedModelId
+                          ? `${claudeModel} (${resolvedModelId})`
+                          : claudeModel
+                      })
                     : provider === 'cursor'
                     ? t('providerSelection.readyPrompt.cursor', { model: cursorModel })
                     : provider === 'codex'
@@ -5396,6 +5429,13 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
                     className=""
                   />
                 )}
+            {/* Resolved model indicator */}
+            {provider === 'claude' && resolvedModelId && (
+              <span className="text-xs text-gray-400 dark:text-gray-500 truncate max-w-[200px]" title={resolvedModelId}>
+                {resolvedModelId}
+              </span>
+            )}
+
             {/* Token usage pie chart - positioned next to mode indicator */}
             <TokenUsagePie
               used={tokenBudget?.used || 0}

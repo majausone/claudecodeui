@@ -6,21 +6,40 @@
 /**
  * Claude (Anthropic) Models
  *
- * Note: Claude uses two different formats:
- * - SDK format ('sonnet', 'opus') - used by the UI and claude-sdk.js
- * - API format ('claude-sonnet-4.5') - used by slash commands for display
+ * Using generic model aliases as recommended by Anthropic documentation.
+ * The SDK resolves these to the latest versioned model automatically.
+ * Labels are kept generic so they don't need updating with each release.
  */
 export const CLAUDE_MODELS = {
-  // Models in SDK format (what the actual SDK accepts)
   OPTIONS: [
-    { value: 'sonnet', label: 'Sonnet' },
-    { value: 'opus', label: 'Opus' },
-    { value: 'haiku', label: 'Haiku' },
-    { value: 'opusplan', label: 'Opus Plan' },
-    { value: 'sonnet[1m]', label: 'Sonnet [1M]' }
+    {
+      value: 'opus',
+      label: 'Opus',
+      description: 'Most capable model for complex tasks'
+    },
+    {
+      value: 'sonnet',
+      label: 'Sonnet',
+      description: 'Best for coding and agents'
+    },
+    {
+      value: 'haiku',
+      label: 'Haiku',
+      description: 'Fast and efficient'
+    },
+    {
+      value: 'opusplan',
+      label: 'Opus Plan',
+      description: 'Specialized for planning'
+    },
+    {
+      value: 'sonnet[1m]',
+      label: 'Sonnet [1M]',
+      description: 'Extended context window'
+    }
   ],
 
-  DEFAULT: 'sonnet'
+  DEFAULT: 'opus'
 };
 
 /**

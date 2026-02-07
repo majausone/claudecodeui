@@ -196,10 +196,26 @@ function mapCliOptionsToSDK(options = {}) {
   // This does not override allowlists; it only feeds the canUseTool gate.
   sdkOptions.disallowedTools = settings.disallowedTools || [];
 
-  // Map model (default to sonnet)
-  // Valid models: sonnet, opus, haiku, opusplan, sonnet[1m]
-  sdkOptions.model = options.model || CLAUDE_MODELS.DEFAULT;
-  console.log(`Using model: ${sdkOptions.model}`);
+  // Map model - using generic aliases as recommended by Anthropic
+  // The SDK accepts aliases: opus, sonnet, haiku
+  // Force the model to be passed explicitly
+  let modelToUse = options.model || CLAUDE_MODELS.DEFAULT;
+
+  // IMPORTANT: Set model directly in options to ensure it's used
+  sdkOptions.model = modelToUse;
+
+  console.log(`[DEBUG] Model received from frontend: "${options.model}"`);
+  console.log(`[DEBUG] Default model: "${CLAUDE_MODELS.DEFAULT}"`);
+  console.log(`[INFO] FORCING SDK to use model: "${sdkOptions.model}"`);
+
+  // Log full options for debugging
+  console.log(`[DEBUG] Full SDK options being sent:`, JSON.stringify({
+    model: sdkOptions.model,
+    cwd: sdkOptions.cwd,
+    resume: sdkOptions.resume,
+    systemPrompt: sdkOptions.systemPrompt,
+    permissionMode: sdkOptions.permissionMode
+  }, null, 2));
 
   // Map system prompt configuration
   sdkOptions.systemPrompt = {
@@ -214,6 +230,12 @@ function mapCliOptionsToSDK(options = {}) {
   // Map resume session
   if (sessionId) {
     sdkOptions.resume = sessionId;
+  }
+
+  // Enable experimental agent teams if configured
+  if (process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1') {
+    sdkOptions.experimentalAgentTeams = true;
+    console.log('Agent Teams enabled (experimental)');
   }
 
   return sdkOptions;
@@ -617,6 +639,19 @@ async function queryClaudeSDK(command, options = {}, ws) {
             data: tokenBudget,
             sessionId: capturedSessionId || sessionId || null
           });
+        }
+
+        // Extract the resolved (exact) model ID from modelUsage keys
+        if (message.modelUsage) {
+          const resolvedModelId = Object.keys(message.modelUsage)[0];
+          if (resolvedModelId) {
+            console.log(`[INFO] Resolved model: "${resolvedModelId}"`);
+            ws.send({
+              type: 'model-resolved',
+              modelId: resolvedModelId,
+              sessionId: capturedSessionId || sessionId || null
+            });
+          }
         }
       }
     }
