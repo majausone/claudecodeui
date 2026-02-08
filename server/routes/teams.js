@@ -206,7 +206,7 @@ router.post('/', async (req, res) => {
           agentId: `${safeName}-lead@${safeName}`,
           name: `${safeName}-lead`,
           agentType: 'team-lead',
-          model: 'claude-opus-4-6',
+          model: 'opus',
           prompt: '',
           preprompt: '',
           joinedAt: Date.now(),
