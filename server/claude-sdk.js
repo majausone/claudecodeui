@@ -147,7 +147,7 @@ function matchesToolPermission(entry, toolName, input) {
  * @param {Object} options - CLI options
  * @returns {Object} SDK-compatible options
  */
-function mapCliOptionsToSDK(options = {}) {
+async function mapCliOptionsToSDK(options = {}) {
   const { sessionId, cwd, toolsSettings, permissionMode, images } = options;
 
   const sdkOptions = {};
@@ -218,10 +218,60 @@ function mapCliOptionsToSDK(options = {}) {
   }, null, 2));
 
   // Map system prompt configuration
-  sdkOptions.systemPrompt = {
+  const systemPromptConfig = {
     type: 'preset',
     preset: 'claude_code'  // Required to use CLAUDE.md
   };
+
+  // Inject team agent context via systemPrompt.append and agents definitions
+  if (options.teamAgent && !sessionId) {
+    try {
+      const teamsDir = path.join(os.homedir(), '.claude', 'teams');
+      const teamConfigPath = path.join(teamsDir, options.teamAgent.teamName, 'config.json');
+      const configRaw = await fs.readFile(teamConfigPath, 'utf8');
+      const teamConfig = JSON.parse(configRaw);
+      const member = teamConfig.members.find(m => m.name === options.teamAgent.name);
+
+      if (member) {
+        // Append leader's preprompt + prompt to the system prompt
+        const parts = [];
+        if (member.preprompt) parts.push(member.preprompt);
+        if (member.prompt) parts.push(member.prompt);
+        if (parts.length > 0) {
+          systemPromptConfig.append = parts.join('\n\n');
+          console.log(`[TEAMS] Appended system prompt for "${member.name}" in team "${teamConfig.name}"`);
+        }
+
+        // Override model if agent has a specific one
+        if (member.model) {
+          sdkOptions.model = member.model;
+          console.log(`[TEAMS] Using model "${member.model}" for agent "${member.name}"`);
+        }
+
+        // Register sub-agents as SDK agent definitions so their prompts are injected automatically
+        const subAgents = teamConfig.members.filter(m => m.agentType !== 'team-lead');
+        if (subAgents.length > 0) {
+          const agentDefs = {};
+          for (const agent of subAgents) {
+            const agentParts = [];
+            if (agent.preprompt) agentParts.push(agent.preprompt);
+            if (agent.prompt) agentParts.push(agent.prompt);
+            agentDefs[agent.name] = {
+              description: `Team "${teamConfig.name}" agent: ${agent.name}. Use subagent_type="${agent.name}" to invoke this agent.`,
+              prompt: agentParts.join('\n\n') || `You are "${agent.name}" in team "${teamConfig.name}".`,
+              model: agent.model || undefined
+            };
+          }
+          sdkOptions.agents = agentDefs;
+          console.log(`[TEAMS] Registered ${subAgents.length} agent definition(s):`, Object.keys(agentDefs).join(', '));
+        }
+      }
+    } catch (err) {
+      console.error('[TEAMS] Failed to configure team context:', err.message);
+    }
+  }
+
+  sdkOptions.systemPrompt = systemPromptConfig;
 
   // Map setting sources for CLAUDE.md loading
   // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
@@ -498,7 +548,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
   try {
     // Map CLI options to SDK format
-    const sdkOptions = mapCliOptionsToSDK(options);
+    const sdkOptions = await mapCliOptionsToSDK(options);
 
     // Load MCP configuration
     const mcpServers = await loadMcpConfig(options.cwd);

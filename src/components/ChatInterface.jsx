@@ -4577,7 +4577,8 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
           toolsSettings: toolsSettings,
           permissionMode: permissionMode,
           model: claudeModel,
-          images: uploadedImages // Pass images to backend
+          images: uploadedImages, // Pass images to backend
+          teamAgent: selectedTeamAgent || undefined // Team agent context for preprompt injection
         }
       });
     }
@@ -5633,7 +5634,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
               aria-hidden="true"
               className="absolute inset-0 pointer-events-none overflow-hidden rounded-2xl"
             >
-              <div className="chat-input-placeholder block w-full pl-20 pr-20 sm:pr-40 py-1.5 sm:py-4 text-transparent text-base leading-6 whitespace-pre-wrap break-words">
+              <div className="chat-input-placeholder block w-full pl-12 pr-20 sm:pr-40 py-1.5 sm:py-4 text-transparent text-base leading-6 whitespace-pre-wrap break-words">
                 {renderInputWithMentions(input)}
               </div>
             </div>
@@ -5662,15 +5663,15 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
               }}
               placeholder={t('input.placeholder', { provider: provider === 'cursor' ? t('messageTypes.cursor') : provider === 'codex' ? t('messageTypes.codex') : t('messageTypes.claude') })}
               disabled={isLoading}
-              className="chat-input-placeholder block w-full pl-20 pr-20 sm:pr-40 py-1.5 sm:py-4 bg-transparent rounded-2xl focus:outline-none text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 disabled:opacity-50 resize-none min-h-[50px] sm:min-h-[80px] max-h-[40vh] sm:max-h-[300px] overflow-y-auto text-base leading-6 transition-all duration-200"
+              className="chat-input-placeholder block w-full pl-12 pr-20 sm:pr-40 py-1.5 sm:py-4 bg-transparent rounded-2xl focus:outline-none text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 disabled:opacity-50 resize-none min-h-[50px] sm:min-h-[80px] max-h-[40vh] sm:max-h-[300px] overflow-y-auto text-base leading-6 transition-all duration-200"
               style={{ height: '50px' }}
             />
             {/* Image upload & Agent selector buttons */}
-            <div className="absolute left-2 top-1/2 transform -translate-y-1/2 flex items-center gap-0.5">
+            <div className="absolute left-2 top-1/2 transform -translate-y-1/2 flex flex-col items-center gap-0">
               <button
                 type="button"
                 onClick={open}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
                 title={t('input.attachImages')}
               >
                 <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -5721,7 +5722,7 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, late
             </button>
 
             {/* Hint text inside input box at bottom - Desktop only */}
-            <div className={`absolute bottom-1 left-20 right-14 sm:right-40 text-xs text-gray-400 dark:text-gray-500 pointer-events-none hidden sm:block transition-opacity duration-200 ${
+            <div className={`absolute bottom-1 left-12 right-14 sm:right-40 text-xs text-gray-400 dark:text-gray-500 pointer-events-none hidden sm:block transition-opacity duration-200 ${
               input.trim() ? 'opacity-0' : 'opacity-100'
             }`}>
               {sendByCtrlEnter

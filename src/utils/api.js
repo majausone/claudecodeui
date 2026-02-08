@@ -211,6 +211,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+    getHumanTasks: (teamName) => authenticatedFetch(`/api/teams/${teamName}/human-tasks`),
+    updateHumanTasks: (teamName, data) => authenticatedFetch(`/api/teams/${teamName}/human-tasks`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+    openFolder: (teamName) => authenticatedFetch(`/api/teams/${teamName}/open-folder`, {
+      method: 'POST',
+    }),
   },
 
   // Generic GET method for any endpoint

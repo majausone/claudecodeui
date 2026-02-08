@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Users, Plus, Trash2, Edit3, Check, ChevronDown, ChevronRight, Play, Square, Clock, FileText, Send, UserPlus, Bot, AlertTriangle } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { X, Users, Plus, Trash2, Edit3, Check, ChevronDown, FileText, UserPlus, Bot, AlertTriangle, ClipboardList, FolderOpen } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { api } from '../utils/api';
@@ -8,7 +8,7 @@ function TeamsPanel({ isOpen, onClose }) {
   const [teams, setTeams] = useState([]);
   const [selectedTeam, setSelectedTeam] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
-  const [activeTab, setActiveTab] = useState('teams'); // 'teams', 'agents', 'tasks'
+  const [activeTab, setActiveTab] = useState('config');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -21,19 +21,23 @@ function TeamsPanel({ isOpen, onClose }) {
   const [showCreateAgent, setShowCreateAgent] = useState(false);
   const [newAgentName, setNewAgentName] = useState('');
   const [newAgentModel, setNewAgentModel] = useState('sonnet');
-  const [newAgentType, setNewAgentType] = useState('general-purpose');
   const [newAgentPrompt, setNewAgentPrompt] = useState('');
-  const [newAgentTaskFile, setNewAgentTaskFile] = useState('');
 
   // Edit agent
   const [editingAgent, setEditingAgent] = useState(null);
+  const [editName, setEditName] = useState('');
   const [editPrompt, setEditPrompt] = useState('');
+  const [editPreprompt, setEditPreprompt] = useState('');
   const [editModel, setEditModel] = useState('');
-  const [editTaskFile, setEditTaskFile] = useState('');
 
-  // Agent tasks
+  // Task editing
   const [agentTaskContent, setAgentTaskContent] = useState('');
   const [tasksDirty, setTasksDirty] = useState(false);
+
+  // Human tasks editing
+  const [humanTaskContent, setHumanTaskContent] = useState('');
+  const [humanTaskPath, setHumanTaskPath] = useState('');
+  const [humanTaskDirty, setHumanTaskDirty] = useState(false);
 
   const fetchTeams = useCallback(async () => {
     try {
@@ -41,7 +45,7 @@ function TeamsPanel({ isOpen, onClose }) {
       const res = await api.teams.list();
       const data = await res.json();
       setTeams(data.teams || []);
-    } catch (err) {
+    } catch {
       setError('Failed to load teams');
     } finally {
       setLoading(false);
@@ -53,8 +57,10 @@ function TeamsPanel({ isOpen, onClose }) {
       const res = await api.teams.get(teamName);
       const data = await res.json();
       setSelectedTeam(data);
-    } catch (err) {
+      return data;
+    } catch {
       setError('Failed to load team details');
+      return null;
     }
   }, []);
 
@@ -64,7 +70,6 @@ function TeamsPanel({ isOpen, onClose }) {
     }
   }, [isOpen, fetchTeams]);
 
-  // Auto-refresh teams every 5 seconds when panel is open
   useEffect(() => {
     if (!isOpen) return;
     const interval = setInterval(() => {
@@ -82,7 +87,7 @@ function TeamsPanel({ isOpen, onClose }) {
       setError('');
       const res = await api.teams.create({
         name: newTeamName.trim(),
-        description: newTeamDesc.trim()
+        description: newTeamDesc.trim(),
       });
       const data = await res.json();
       if (data.success) {
@@ -93,7 +98,7 @@ function TeamsPanel({ isOpen, onClose }) {
       } else {
         setError(data.error || 'Failed to create team');
       }
-    } catch (err) {
+    } catch {
       setError('Failed to create team');
     }
   };
@@ -110,14 +115,14 @@ function TeamsPanel({ isOpen, onClose }) {
         }
         fetchTeams();
       }
-    } catch (err) {
+    } catch {
       setError('Failed to delete team');
     }
   };
 
   const handleSelectTeam = async (team) => {
     setSelectedAgent(null);
-    setActiveTab('agents');
+    setActiveTab('config');
     await fetchTeamDetails(team.name);
   };
 
@@ -128,21 +133,18 @@ function TeamsPanel({ isOpen, onClose }) {
       const res = await api.teams.addAgent(selectedTeam.name, {
         name: newAgentName.trim(),
         model: newAgentModel,
-        agentType: newAgentType,
-        prompt: newAgentPrompt,
-        taskFile: newAgentTaskFile
+        prompt: newAgentPrompt
       });
       const data = await res.json();
       if (data.success) {
         setShowCreateAgent(false);
         setNewAgentName('');
         setNewAgentPrompt('');
-        setNewAgentTaskFile('');
         fetchTeamDetails(selectedTeam.name);
       } else {
         setError(data.error || 'Failed to create agent');
       }
-    } catch (err) {
+    } catch {
       setError('Failed to create agent');
     }
   };
@@ -159,48 +161,82 @@ function TeamsPanel({ isOpen, onClose }) {
         }
         fetchTeamDetails(selectedTeam.name);
       }
-    } catch (err) {
+    } catch {
       setError('Failed to delete agent');
     }
   };
 
   const handleEditAgent = (agent) => {
     setEditingAgent(agent.name);
+    setEditName(agent.name);
     setEditPrompt(agent.prompt || '');
+    setEditPreprompt(agent.preprompt || '');
     setEditModel(agent.model || 'sonnet');
-    setEditTaskFile(agent.taskFile || '');
   };
 
   const handleSaveAgent = async () => {
     if (!selectedTeam || !editingAgent) return;
     try {
-      await api.teams.updateAgent(selectedTeam.name, editingAgent, {
+      const updateData = {
         prompt: editPrompt,
         model: editModel,
-        taskFile: editTaskFile
-      });
-      setEditingAgent(null);
-      fetchTeamDetails(selectedTeam.name);
-    } catch (err) {
+        preprompt: editPreprompt
+      };
+      if (editName !== editingAgent) {
+        updateData.newName = editName;
+      }
+      const res = await api.teams.updateAgent(selectedTeam.name, editingAgent, updateData);
+      const data = await res.json();
+      if (data.success) {
+        setEditingAgent(null);
+        const teamData = await fetchTeamDetails(selectedTeam.name);
+        // Update selectedAgent reference
+        if (teamData && data.agent) {
+          const updated = teamData.members.find(m => m.name === data.agent.name);
+          if (updated) setSelectedAgent(updated);
+        }
+      } else {
+        setError(data.error || 'Failed to update agent');
+      }
+    } catch {
       setError('Failed to update agent');
     }
   };
 
+  const handleCancelEdit = () => {
+    setEditingAgent(null);
+  };
+
   const handleSelectAgent = async (agent) => {
     setSelectedAgent(agent);
-    setActiveTab('tasks');
-    // Load task file content
-    if (agent.taskFile) {
-      try {
-        const res = await api.teams.getAgentTasks(selectedTeam.name, agent.name);
-        const data = await res.json();
-        setAgentTaskContent(data.content || '');
-        setTasksDirty(false);
-      } catch {
-        setAgentTaskContent('');
-      }
-    } else {
+    setActiveTab('config');
+    setEditingAgent(null);
+    setTasksDirty(false);
+    setHumanTaskDirty(false);
+  };
+
+  const loadAgentTasks = async (agent) => {
+    if (!selectedTeam || !agent) return;
+    try {
+      const res = await api.teams.getAgentTasks(selectedTeam.name, agent.name);
+      const data = await res.json();
+      setAgentTaskContent(data.content || '');
+      setTasksDirty(false);
+    } catch {
       setAgentTaskContent('');
+    }
+  };
+
+  const loadHumanTasks = async () => {
+    if (!selectedTeam) return;
+    try {
+      const res = await api.teams.getHumanTasks(selectedTeam.name);
+      const data = await res.json();
+      setHumanTaskContent(data.content || '');
+      setHumanTaskPath(data.filePath || '');
+      setHumanTaskDirty(false);
+    } catch {
+      setHumanTaskContent('');
     }
   };
 
@@ -208,12 +244,41 @@ function TeamsPanel({ isOpen, onClose }) {
     if (!selectedTeam || !selectedAgent) return;
     try {
       await api.teams.updateAgentTasks(selectedTeam.name, selectedAgent.name, {
-        content: agentTaskContent,
-        taskFile: selectedAgent.taskFile
+        content: agentTaskContent
       });
       setTasksDirty(false);
-    } catch (err) {
+    } catch {
       setError('Failed to save tasks');
+    }
+  };
+
+  const handleSaveHumanTasks = async () => {
+    if (!selectedTeam) return;
+    try {
+      await api.teams.updateHumanTasks(selectedTeam.name, {
+        content: humanTaskContent
+      });
+      setHumanTaskDirty(false);
+    } catch {
+      setError('Failed to save human tasks');
+    }
+  };
+
+  const handleOpenFolder = async () => {
+    if (!selectedTeam) return;
+    try {
+      await api.teams.openFolder(selectedTeam.name);
+    } catch {
+      setError('Failed to open folder');
+    }
+  };
+
+  const handleTabChange = async (tab) => {
+    setActiveTab(tab);
+    if (tab === 'tasks' && selectedAgent) {
+      await loadAgentTasks(selectedAgent);
+    } else if (tab === 'human-tasks') {
+      await loadHumanTasks();
     }
   };
 
@@ -222,12 +287,9 @@ function TeamsPanel({ isOpen, onClose }) {
     return 'text-gray-400';
   };
 
-  const getAgentStatusLabel = (agent) => {
-    if (agent.agentType === 'team-lead') return 'Lead';
-    return 'Agent';
-  };
-
   if (!isOpen) return null;
+
+  const isLead = selectedAgent?.agentType === 'team-lead';
 
   return (
     <div className="modal-backdrop fixed inset-0 flex items-center justify-center z-[9999] md:p-4 bg-background/95">
@@ -236,9 +298,7 @@ function TeamsPanel({ isOpen, onClose }) {
         <div className="flex items-center justify-between p-4 md:p-6 border-b border-border flex-shrink-0">
           <div className="flex items-center gap-3">
             <Users className="w-5 h-5 md:w-6 md:h-6 text-blue-600" />
-            <h2 className="text-lg md:text-xl font-semibold text-foreground">
-              Teams
-            </h2>
+            <h2 className="text-lg md:text-xl font-semibold text-foreground">Teams</h2>
             {selectedTeam && (
               <span className="text-sm text-muted-foreground">
                 / {selectedTeam.name}
@@ -246,12 +306,7 @@ function TeamsPanel({ isOpen, onClose }) {
               </span>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClose}
-            className="text-muted-foreground hover:text-foreground touch-manipulation"
-          >
+          <Button variant="ghost" size="sm" onClick={onClose} className="text-muted-foreground hover:text-foreground">
             <X className="w-5 h-5" />
           </Button>
         </div>
@@ -268,46 +323,25 @@ function TeamsPanel({ isOpen, onClose }) {
         )}
 
         <div className="flex-1 flex overflow-hidden">
-          {/* Left panel - Team list or Agent list */}
+          {/* Left panel */}
           <div className="w-64 border-r border-border flex flex-col flex-shrink-0">
             {!selectedTeam ? (
-              // Team list view
+              /* Team list */
               <div className="flex-1 flex flex-col">
                 <div className="p-3 border-b border-border flex items-center justify-between">
                   <span className="text-sm font-medium text-foreground">Teams</span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setShowCreateTeam(true)}
-                    className="h-7 w-7 p-0"
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => setShowCreateTeam(true)} className="h-7 w-7 p-0">
                     <Plus className="w-4 h-4" />
                   </Button>
                 </div>
 
                 {showCreateTeam && (
                   <div className="p-3 border-b border-border space-y-2">
-                    <Input
-                      placeholder="Team name"
-                      value={newTeamName}
-                      onChange={(e) => setNewTeamName(e.target.value)}
-                      className="h-8 text-sm"
-                      autoFocus
-                      onKeyDown={(e) => e.key === 'Enter' && handleCreateTeam()}
-                    />
-                    <Input
-                      placeholder="Description (optional)"
-                      value={newTeamDesc}
-                      onChange={(e) => setNewTeamDesc(e.target.value)}
-                      className="h-8 text-sm"
-                    />
+                    <Input placeholder="Team name" value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} className="h-8 text-sm" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCreateTeam()} />
+                    <Input placeholder="Description (optional)" value={newTeamDesc} onChange={(e) => setNewTeamDesc(e.target.value)} className="h-8 text-sm" />
                     <div className="flex gap-2">
-                      <Button size="sm" className="h-7 text-xs flex-1" onClick={handleCreateTeam}>
-                        Create
-                      </Button>
-                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowCreateTeam(false)}>
-                        Cancel
-                      </Button>
+                      <Button size="sm" className="h-7 text-xs flex-1" onClick={handleCreateTeam}>Create</Button>
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowCreateTeam(false)}>Cancel</Button>
                     </div>
                   </div>
                 )}
@@ -317,27 +351,16 @@ function TeamsPanel({ isOpen, onClose }) {
                     <div className="p-4 text-center text-sm text-muted-foreground">Loading...</div>
                   )}
                   {!loading && teams.length === 0 && (
-                    <div className="p-4 text-center text-sm text-muted-foreground">
-                      No teams yet. Create one to get started.
-                    </div>
+                    <div className="p-4 text-center text-sm text-muted-foreground">No teams yet. Create one to get started.</div>
                   )}
                   {teams.map((team) => (
-                    <div
-                      key={team.name}
-                      className="group flex items-center gap-2 px-3 py-2 hover:bg-accent cursor-pointer transition-colors"
-                      onClick={() => handleSelectTeam(team)}
-                    >
+                    <div key={team.name} className="group flex items-center gap-2 px-3 py-2 hover:bg-accent cursor-pointer transition-colors" onClick={() => handleSelectTeam(team)}>
                       <Users className="w-4 h-4 text-blue-500 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-foreground truncate">{team.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {team.memberCount} member{team.memberCount !== 1 ? 's' : ''}
-                        </div>
+                        <div className="text-xs text-muted-foreground">{team.memberCount} member{team.memberCount !== 1 ? 's' : ''}</div>
                       </div>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteTeam(team.name); }}
-                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all"
-                      >
+                      <button onClick={(e) => { e.stopPropagation(); handleDeleteTeam(team.name); }} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all">
                         <Trash2 className="w-3 h-3 text-red-500" />
                       </button>
                     </div>
@@ -345,78 +368,33 @@ function TeamsPanel({ isOpen, onClose }) {
                 </div>
               </div>
             ) : (
-              // Agent list view (inside a team)
+              /* Agent list */
               <div className="flex-1 flex flex-col">
                 <div className="p-3 border-b border-border">
-                  <button
-                    onClick={() => { setSelectedTeam(null); setSelectedAgent(null); setActiveTab('teams'); }}
-                    className="text-xs text-blue-500 hover:text-blue-700 mb-1 flex items-center gap-1"
-                  >
+                  <button onClick={() => { setSelectedTeam(null); setSelectedAgent(null); }} className="text-xs text-blue-500 hover:text-blue-700 mb-1 flex items-center gap-1">
                     <ChevronDown className="w-3 h-3 rotate-90" /> Back to teams
                   </button>
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-foreground">Agents</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setShowCreateAgent(true)}
-                      className="h-7 w-7 p-0"
-                    >
+                    <Button variant="ghost" size="sm" onClick={() => setShowCreateAgent(true)} className="h-7 w-7 p-0">
                       <UserPlus className="w-4 h-4" />
                     </Button>
                   </div>
-                  {selectedTeam.description && (
-                    <p className="text-xs text-muted-foreground mt-1">{selectedTeam.description}</p>
-                  )}
+                  {selectedTeam.description && <p className="text-xs text-muted-foreground mt-1">{selectedTeam.description}</p>}
                 </div>
 
                 {showCreateAgent && (
                   <div className="p-3 border-b border-border space-y-2">
-                    <Input
-                      placeholder="Agent name"
-                      value={newAgentName}
-                      onChange={(e) => setNewAgentName(e.target.value)}
-                      className="h-8 text-sm"
-                      autoFocus
-                    />
-                    <select
-                      value={newAgentModel}
-                      onChange={(e) => setNewAgentModel(e.target.value)}
-                      className="w-full h-8 text-sm rounded-md border border-input bg-background px-2"
-                    >
+                    <Input placeholder="Agent name" value={newAgentName} onChange={(e) => setNewAgentName(e.target.value)} className="h-8 text-sm" autoFocus />
+                    <select value={newAgentModel} onChange={(e) => setNewAgentModel(e.target.value)} className="w-full h-8 text-sm rounded-md border border-input bg-background px-2">
                       <option value="opus">Opus 4.6</option>
                       <option value="sonnet">Sonnet 4.5</option>
                       <option value="haiku">Haiku 4.5</option>
                     </select>
-                    <select
-                      value={newAgentType}
-                      onChange={(e) => setNewAgentType(e.target.value)}
-                      className="w-full h-8 text-sm rounded-md border border-input bg-background px-2"
-                    >
-                      <option value="general-purpose">General Purpose</option>
-                      <option value="Bash">Bash Specialist</option>
-                      <option value="Explore">Explorer</option>
-                      <option value="Plan">Planner</option>
-                    </select>
-                    <textarea
-                      placeholder="Agent prompt / instructions"
-                      value={newAgentPrompt}
-                      onChange={(e) => setNewAgentPrompt(e.target.value)}
-                      className="w-full text-sm rounded-md border border-input bg-background px-2 py-1 min-h-[60px] resize-y"
-                    />
-                    <Input
-                      placeholder="Task file path (optional)"
-                      value={newAgentTaskFile}
-                      onChange={(e) => setNewAgentTaskFile(e.target.value)}
-                      className="h-8 text-sm"
-                    />
+                    <textarea placeholder="Agent prompt (optional)" value={newAgentPrompt} onChange={(e) => setNewAgentPrompt(e.target.value)} className="w-full text-sm rounded-md border border-input bg-background px-2 py-1 min-h-[60px] resize-y" />
                     <div className="flex gap-2">
-                      <Button size="sm" className="h-7 text-xs flex-1" onClick={handleCreateAgent}>
-                        Add Agent
-                      </Button>
-                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowCreateAgent(false)}>
-                        Cancel
-                      </Button>
+                      <Button size="sm" className="h-7 text-xs flex-1" onClick={handleCreateAgent}>Add Agent</Button>
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowCreateAgent(false)}>Cancel</Button>
                     </div>
                   </div>
                 )}
@@ -425,23 +403,16 @@ function TeamsPanel({ isOpen, onClose }) {
                   {(selectedTeam.members || []).map((agent) => (
                     <div
                       key={agent.name}
-                      className={`group flex items-center gap-2 px-3 py-2 hover:bg-accent cursor-pointer transition-colors ${
-                        selectedAgent?.name === agent.name ? 'bg-accent' : ''
-                      }`}
+                      className={`group flex items-center gap-2 px-3 py-2 hover:bg-accent cursor-pointer transition-colors ${selectedAgent?.name === agent.name ? 'bg-accent' : ''}`}
                       onClick={() => handleSelectAgent(agent)}
                     >
                       <Bot className={`w-4 h-4 flex-shrink-0 ${getAgentStatusColor(agent)}`} />
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-foreground truncate">{agent.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {getAgentStatusLabel(agent)} · {agent.model || 'sonnet'}
-                        </div>
+                        <div className="text-xs text-muted-foreground">{agent.agentType === 'team-lead' ? 'Lead' : 'Agent'} &middot; {agent.model}</div>
                       </div>
                       {agent.name !== 'team-lead' && (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteAgent(agent.name); }}
-                          className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all"
-                        >
+                        <button onClick={(e) => { e.stopPropagation(); handleDeleteAgent(agent.name); }} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all">
                           <Trash2 className="w-3 h-3 text-red-500" />
                         </button>
                       )}
@@ -452,7 +423,7 @@ function TeamsPanel({ isOpen, onClose }) {
             )}
           </div>
 
-          {/* Right panel - Agent details / Tasks */}
+          {/* Right panel */}
           <div className="flex-1 flex flex-col overflow-hidden">
             {!selectedTeam && (
               <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -495,72 +466,57 @@ function TeamsPanel({ isOpen, onClose }) {
                       </div>
                       <div>
                         <h3 className="text-sm font-semibold text-foreground">{selectedAgent.name}</h3>
-                        <p className="text-xs text-muted-foreground">
-                          {selectedAgent.agentType} · {selectedAgent.model}
-                        </p>
+                        <p className="text-xs text-muted-foreground">{selectedAgent.agentType === 'team-lead' ? 'Lead' : 'Agent'} &middot; {selectedAgent.model}</p>
                       </div>
                     </div>
-                    {selectedAgent.name !== 'team-lead' && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => editingAgent === selectedAgent.name ? handleSaveAgent() : handleEditAgent(selectedAgent)}
-                        className="h-8"
-                      >
-                        {editingAgent === selectedAgent.name ? (
-                          <><Check className="w-4 h-4 mr-1" /> Save</>
-                        ) : (
-                          <><Edit3 className="w-4 h-4 mr-1" /> Edit</>
-                        )}
-                      </Button>
-                    )}
+                    <div className="flex gap-2">
+                      {editingAgent === selectedAgent.name ? (
+                        <>
+                          <Button variant="ghost" size="sm" onClick={handleCancelEdit} className="h-8">
+                            <X className="w-4 h-4 mr-1" /> Cancel
+                          </Button>
+                          <Button size="sm" onClick={handleSaveAgent} className="h-8">
+                            <Check className="w-4 h-4 mr-1" /> Save
+                          </Button>
+                        </>
+                      ) : (
+                        <Button variant="ghost" size="sm" onClick={() => handleEditAgent(selectedAgent)} className="h-8">
+                          <Edit3 className="w-4 h-4 mr-1" /> Edit
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 {/* Tabs */}
                 <div className="border-b border-border flex-shrink-0">
                   <div className="flex px-4">
-                    <button
-                      onClick={() => setActiveTab('agents')}
-                      className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                        activeTab === 'agents'
-                          ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                          : 'border-transparent text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
+                    <button onClick={() => handleTabChange('config')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'config' ? 'border-blue-600 text-blue-600 dark:text-blue-400' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
                       Config
                     </button>
-                    <button
-                      onClick={() => { setActiveTab('tasks'); handleSelectAgent(selectedAgent); }}
-                      className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                        activeTab === 'tasks'
-                          ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-                          : 'border-transparent text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      <FileText className="w-3 h-3 inline mr-1" />
-                      Tasks
+                    {isLead && (
+                      <button onClick={() => handleTabChange('human-tasks')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-1 ${activeTab === 'human-tasks' ? 'border-blue-600 text-blue-600 dark:text-blue-400' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+                        <ClipboardList className="w-3 h-3" /> Human Tasks
+                      </button>
+                    )}
+                    <button onClick={() => handleTabChange('tasks')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors flex items-center gap-1 ${activeTab === 'tasks' ? 'border-blue-600 text-blue-600 dark:text-blue-400' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+                      <FileText className="w-3 h-3" /> Tasks
                     </button>
                   </div>
                 </div>
 
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-4">
-                  {activeTab === 'agents' && (
+                  {/* CONFIG TAB */}
+                  {activeTab === 'config' && (
                     <div className="space-y-4">
-                      {/* Prompt */}
+                      {/* Name */}
                       <div>
-                        <label className="text-sm font-medium text-foreground block mb-1">Prompt / Instructions</label>
+                        <label className="text-sm font-medium text-foreground block mb-1">Name</label>
                         {editingAgent === selectedAgent.name ? (
-                          <textarea
-                            value={editPrompt}
-                            onChange={(e) => setEditPrompt(e.target.value)}
-                            className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 min-h-[150px] resize-y"
-                          />
+                          <Input value={editName} onChange={(e) => setEditName(e.target.value)} className="h-9 text-sm" />
                         ) : (
-                          <div className="text-sm text-muted-foreground bg-muted/50 rounded-md p-3 min-h-[60px] whitespace-pre-wrap">
-                            {selectedAgent.prompt || '(no prompt configured)'}
-                          </div>
+                          <div className="text-sm text-muted-foreground">{selectedAgent.name}</div>
                         )}
                       </div>
 
@@ -568,11 +524,7 @@ function TeamsPanel({ isOpen, onClose }) {
                       <div>
                         <label className="text-sm font-medium text-foreground block mb-1">Model</label>
                         {editingAgent === selectedAgent.name ? (
-                          <select
-                            value={editModel}
-                            onChange={(e) => setEditModel(e.target.value)}
-                            className="w-full h-9 text-sm rounded-md border border-input bg-background px-2"
-                          >
+                          <select value={editModel} onChange={(e) => setEditModel(e.target.value)} className="w-full h-9 text-sm rounded-md border border-input bg-background px-2">
                             <option value="opus">Opus 4.6</option>
                             <option value="sonnet">Sonnet 4.5</option>
                             <option value="haiku">Haiku 4.5</option>
@@ -582,72 +534,103 @@ function TeamsPanel({ isOpen, onClose }) {
                         )}
                       </div>
 
-                      {/* Task File */}
+                      {/* Pre-prompt (auto-generated) */}
                       <div>
-                        <label className="text-sm font-medium text-foreground block mb-1">Task File Path</label>
+                        <label className="text-sm font-medium text-foreground block mb-1">
+                          Pre-prompt <span className="text-xs text-muted-foreground font-normal">(auto-generated, editable)</span>
+                        </label>
                         {editingAgent === selectedAgent.name ? (
-                          <Input
-                            value={editTaskFile}
-                            onChange={(e) => setEditTaskFile(e.target.value)}
-                            placeholder="/path/to/tasks.md"
-                            className="h-9 text-sm"
-                          />
+                          <textarea value={editPreprompt} onChange={(e) => setEditPreprompt(e.target.value)} className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 min-h-[120px] resize-y font-mono" />
                         ) : (
-                          <div className="text-sm text-muted-foreground">
-                            {selectedAgent.taskFile || '(none)'}
+                          <div className="text-xs text-muted-foreground bg-muted/50 rounded-md p-3 min-h-[60px] whitespace-pre-wrap font-mono">
+                            {selectedAgent.preprompt || '(no preprompt)'}
                           </div>
                         )}
                       </div>
 
-                      {/* Agent Info */}
+                      {/* Prompt */}
+                      <div>
+                        <label className="text-sm font-medium text-foreground block mb-1">Prompt</label>
+                        {editingAgent === selectedAgent.name ? (
+                          <textarea value={editPrompt} onChange={(e) => setEditPrompt(e.target.value)} className="w-full text-sm rounded-md border border-input bg-background px-3 py-2 min-h-[100px] resize-y" placeholder="Custom instructions for this agent..." />
+                        ) : (
+                          <div className="text-sm text-muted-foreground bg-muted/50 rounded-md p-3 min-h-[40px] whitespace-pre-wrap">
+                            {selectedAgent.prompt || '(no custom prompt)'}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Task file path */}
+                      <div>
+                        <label className="text-sm font-medium text-foreground block mb-1">Task File</label>
+                        <div className="text-xs text-muted-foreground font-mono">{selectedAgent.taskFile || '(auto-created in ~/.claude/teams/)'}</div>
+                      </div>
+
+                      {/* Agent info */}
                       <div className="pt-4 border-t border-border">
                         <div className="grid grid-cols-2 gap-3 text-xs text-muted-foreground">
-                          <div>
-                            <span className="font-medium">Type:</span> {selectedAgent.agentType}
-                          </div>
-                          <div>
-                            <span className="font-medium">Color:</span> {selectedAgent.color}
-                          </div>
-                          <div>
-                            <span className="font-medium">Joined:</span> {new Date(selectedAgent.joinedAt).toLocaleDateString()}
-                          </div>
-                          <div>
-                            <span className="font-medium">ID:</span> {selectedAgent.agentId}
-                          </div>
+                          <div><span className="font-medium">Color:</span> {selectedAgent.color}</div>
+                          <div><span className="font-medium">Joined:</span> {new Date(selectedAgent.joinedAt).toLocaleDateString()}</div>
+                          <div><span className="font-medium">ID:</span> {selectedAgent.agentId}</div>
                         </div>
                       </div>
                     </div>
                   )}
 
+                  {/* HUMAN TASKS TAB (only for team-lead) */}
+                  {activeTab === 'human-tasks' && isLead && (
+                    <div className="flex flex-col h-full">
+                      <div className="flex items-center justify-between mb-2">
+                        <div>
+                          <span className="text-xs text-muted-foreground truncate block">{humanTaskPath || 'human-tasks.md'}</span>
+                          <span className="text-xs text-amber-600 dark:text-amber-400">Source of truth — only the human can edit this</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={handleOpenFolder}>
+                            <FolderOpen className="w-3 h-3 mr-1" /> Open Folder
+                          </Button>
+                          <Button size="sm" className="h-7 text-xs" onClick={handleSaveHumanTasks} disabled={!humanTaskDirty}>
+                            Save
+                          </Button>
+                        </div>
+                      </div>
+                      <textarea
+                        value={humanTaskContent}
+                        onChange={(e) => { setHumanTaskContent(e.target.value); setHumanTaskDirty(true); }}
+                        className="w-full flex-1 text-sm rounded-md border border-input bg-background px-3 py-2 min-h-[300px] resize-y font-mono"
+                        placeholder="Write your tasks and objectives here. The team leader will read this as the source of truth..."
+                      />
+                    </div>
+                  )}
+
+                  {/* TASKS TAB */}
                   {activeTab === 'tasks' && (
                     <div className="flex flex-col h-full">
                       {selectedAgent.taskFile ? (
                         <>
                           <div className="flex items-center justify-between mb-2">
-                            <span className="text-xs text-muted-foreground truncate">
-                              {selectedAgent.taskFile}
-                            </span>
-                            <Button
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={handleSaveAgentTasks}
-                              disabled={!tasksDirty}
-                            >
-                              Save
-                            </Button>
+                            <span className="text-xs text-muted-foreground truncate">{selectedAgent.taskFile}</span>
+                            <div className="flex gap-2">
+                              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={handleOpenFolder}>
+                                <FolderOpen className="w-3 h-3 mr-1" /> Open Folder
+                              </Button>
+                              <Button size="sm" className="h-7 text-xs" onClick={handleSaveAgentTasks} disabled={!tasksDirty}>
+                                Save
+                              </Button>
+                            </div>
                           </div>
                           <textarea
                             value={agentTaskContent}
                             onChange={(e) => { setAgentTaskContent(e.target.value); setTasksDirty(true); }}
                             className="w-full flex-1 text-sm rounded-md border border-input bg-background px-3 py-2 min-h-[300px] resize-y font-mono"
-                            placeholder="Write tasks for this agent..."
+                            placeholder="Agent task notes..."
                           />
                         </>
                       ) : (
                         <div className="text-center text-sm text-muted-foreground py-8">
                           <FileText className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                          <p>No task file configured for this agent.</p>
-                          <p className="text-xs mt-1">Edit the agent config to set a task file path.</p>
+                          <p>No task file configured.</p>
+                          <p className="text-xs mt-1">Set a project path on the team to auto-create task files.</p>
                         </div>
                       )}
                     </div>

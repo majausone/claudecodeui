@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { authenticateToken } from '../middleware/auth.js';
+import { exec } from 'child_process';
 
 const router = express.Router();
 
@@ -10,15 +10,100 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const TEAMS_DIR = path.join(CLAUDE_DIR, 'teams');
 const TASKS_DIR = path.join(CLAUDE_DIR, 'tasks');
 
-// Ensure directories exist
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 }
 
+// Get the team folder path (all task files live here)
+function getTeamFolder(teamName) {
+  return path.join(TEAMS_DIR, teamName);
+}
+
+// Generate preprompt for a given member based on team config
+function generatePreprompt(config, member) {
+  const teamName = config.name;
+  const teamFolder = getTeamFolder(teamName).replace(/\\/g, '/');
+  const isLead = member.agentType === 'team-lead';
+  const otherMembers = config.members.filter(m => m.name !== member.name);
+
+  let preprompt = `You are "${member.name}" in team "${teamName}".`;
+
+  if (config.description) {
+    preprompt += ` Team description: ${config.description}.`;
+  }
+
+  if (isLead) {
+    const agents = otherMembers.filter(m => m.agentType !== 'team-lead');
+    if (agents.length > 0) {
+      preprompt += `\nYou are the team leader. Your agents are: ${agents.map(a => `"${a.name}" (model: ${a.model})`).join(', ')}.`;
+    } else {
+      preprompt += `\nYou are the team leader. No agents have been added yet.`;
+    }
+
+    if (agents.length > 0) {
+      preprompt += `\n\n## How to delegate work to your agents`;
+      preprompt += `\nUse the Task tool with the agent's name as subagent_type:`;
+      for (const a of agents) {
+        preprompt += `\n- Task(subagent_type="${a.name}", prompt="your task here")`;
+      }
+      preprompt += `\nTo run multiple agents in parallel, call multiple Task tools in a single message. You will wait for all of them to complete, then summarize results to the user.`;
+    }
+
+    preprompt += `\n\nIMPORTANT - Human Tasks (source of truth):`;
+    preprompt += `\nRead the file "${teamFolder}/human-tasks.md" at the start of every conversation and periodically while working. This file contains the tasks assigned to you by the human. It is your SOURCE OF TRUTH. You must NEVER edit or write to this file. Only the human can modify it. Always check this file to make sure you haven't drifted from the original objectives.`;
+
+    preprompt += `\n\nYour task file: "${teamFolder}/${member.name}.md"`;
+    preprompt += `\nRead this file every time you are spoken to. Use it to track your progress, notes, and internal task breakdown. If it contains leftover content from a previous session that is unrelated to current work, clean it up.`;
+  } else {
+    const lead = config.members.find(m => m.agentType === 'team-lead');
+    if (lead) {
+      preprompt += ` Your team leader is "${lead.name}".`;
+    }
+    const peers = otherMembers.filter(m => m.agentType !== 'team-lead');
+    if (peers.length > 0) {
+      preprompt += ` Your fellow agents: ${peers.map(a => `"${a.name}"`).join(', ')}.`;
+    }
+
+    preprompt += `\n\nYour task file: "${teamFolder}/${member.name}.md"`;
+    preprompt += `\nRead this file every time you are spoken to. Use it to track your progress, notes, and task status. If it contains leftover content from a previous session that is unrelated to current work, clean it up. Update it as you work.`;
+  }
+
+  return preprompt;
+}
+
+// Regenerate preprompts for all members and save config
+async function regeneratePreprompts(config, configPath) {
+  for (const member of config.members) {
+    member.preprompt = generatePreprompt(config, member);
+  }
+  await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+}
+
+// Create task files for all members in the team folder
+async function createTaskFiles(teamName, members) {
+  const teamFolder = getTeamFolder(teamName);
+  ensureDir(teamFolder);
+
+  // Create human-tasks.md
+  const humanTasksPath = path.join(teamFolder, 'human-tasks.md');
+  if (!fs.existsSync(humanTasksPath)) {
+    await fs.promises.writeFile(humanTasksPath, `# Human Tasks - ${teamName}\n\nWrite your tasks and objectives here. The team leader will read this as the source of truth.\n`, 'utf8');
+  }
+
+  // Create .md for each member
+  for (const member of members) {
+    const memberTaskPath = path.join(teamFolder, `${member.name}.md`);
+    if (!fs.existsSync(memberTaskPath)) {
+      await fs.promises.writeFile(memberTaskPath, `# Tasks - ${member.name}\n\n`, 'utf8');
+    }
+    member.taskFile = memberTaskPath.replace(/\\/g, '/');
+  }
+}
+
 // GET /api/teams - List all teams
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     ensureDir(TEAMS_DIR);
     const entries = await fs.promises.readdir(TEAMS_DIR, { withFileTypes: true });
@@ -52,7 +137,7 @@ router.get('/', authenticateToken, async (req, res) => {
 });
 
 // GET /api/teams/:teamName - Get team details
-router.get('/:teamName', authenticateToken, async (req, res) => {
+router.get('/:teamName', async (req, res) => {
   try {
     const { teamName } = req.params;
     const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -65,24 +150,7 @@ router.get('/:teamName', authenticateToken, async (req, res) => {
     const configData = await fs.promises.readFile(configPath, 'utf8');
     const config = JSON.parse(configData);
 
-    // Also read task files
-    const tasksDir = path.join(TASKS_DIR, safeName);
-    const tasks = [];
-    if (fs.existsSync(tasksDir)) {
-      const taskFiles = await fs.promises.readdir(tasksDir);
-      for (const file of taskFiles) {
-        if (file.endsWith('.json') && file !== '.lock') {
-          try {
-            const taskData = await fs.promises.readFile(path.join(tasksDir, file), 'utf8');
-            tasks.push(JSON.parse(taskData));
-          } catch {
-            // Skip invalid task files
-          }
-        }
-      }
-    }
-
-    // Read inbox files for agent status
+    // Read inbox files
     const inboxDir = path.join(TEAMS_DIR, safeName, 'inboxes');
     const inboxes = {};
     if (fs.existsSync(inboxDir)) {
@@ -91,16 +159,16 @@ router.get('/:teamName', authenticateToken, async (req, res) => {
         if (file.endsWith('.json')) {
           try {
             const inboxData = await fs.promises.readFile(path.join(inboxDir, file), 'utf8');
-            const agentName = file.replace('.json', '');
-            inboxes[agentName] = JSON.parse(inboxData);
-          } catch {
-            // Skip invalid inbox files
-          }
+            inboxes[file.replace('.json', '')] = JSON.parse(inboxData);
+          } catch { /* skip */ }
         }
       }
     }
 
-    res.json({ ...config, tasks, inboxes });
+    // Add folder path for the frontend
+    config.folderPath = getTeamFolder(safeName).replace(/\\/g, '/');
+
+    res.json({ ...config, inboxes });
   } catch (error) {
     console.error('Error getting team:', error);
     res.status(500).json({ error: 'Failed to get team details' });
@@ -108,7 +176,7 @@ router.get('/:teamName', authenticateToken, async (req, res) => {
 });
 
 // POST /api/teams - Create a new team
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { name, description, agents } = req.body;
 
@@ -119,7 +187,7 @@ router.post('/', authenticateToken, async (req, res) => {
     const safeName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
     const teamDir = path.join(TEAMS_DIR, safeName);
 
-    if (fs.existsSync(teamDir)) {
+    if (fs.existsSync(path.join(teamDir, 'config.json'))) {
       return res.status(409).json({ error: 'Team already exists' });
     }
 
@@ -131,18 +199,21 @@ router.post('/', authenticateToken, async (req, res) => {
       name: safeName,
       description: description || '',
       createdAt: Date.now(),
-      leadAgentId: `team-lead@${safeName}`,
+      leadAgentId: `${safeName}-lead@${safeName}`,
       leadSessionId: '',
       members: [
         {
-          agentId: `team-lead@${safeName}`,
-          name: 'team-lead',
+          agentId: `${safeName}-lead@${safeName}`,
+          name: `${safeName}-lead`,
           agentType: 'team-lead',
           model: 'claude-opus-4-6',
+          prompt: '',
+          preprompt: '',
           joinedAt: Date.now(),
           tmuxPaneId: '',
           cwd: '',
-          subscriptions: []
+          subscriptions: [],
+          taskFile: ''
         }
       ]
     };
@@ -154,25 +225,27 @@ router.post('/', authenticateToken, async (req, res) => {
         config.members.push({
           agentId: `${agent.name}@${safeName}`,
           name: agent.name,
-          agentType: agent.agentType || 'general-purpose',
+          agentType: 'agent',
           model: agent.model || 'sonnet',
           prompt: agent.prompt || '',
+          preprompt: '',
           color: colors[index % colors.length],
           planModeRequired: false,
           joinedAt: Date.now(),
           tmuxPaneId: '',
-          cwd: agent.cwd || '',
+          cwd: '',
           subscriptions: [],
-          taskFile: agent.taskFile || ''
+          taskFile: ''
         });
       });
     }
 
-    await fs.promises.writeFile(
-      path.join(teamDir, 'config.json'),
-      JSON.stringify(config, null, 2),
-      'utf8'
-    );
+    // Create task files in team folder
+    await createTaskFiles(safeName, config.members);
+
+    // Generate preprompts
+    const configPath = path.join(teamDir, 'config.json');
+    await regeneratePreprompts(config, configPath);
 
     // Create inbox files
     for (const member of config.members) {
@@ -191,7 +264,7 @@ router.post('/', authenticateToken, async (req, res) => {
 });
 
 // PUT /api/teams/:teamName - Update team config
-router.put('/:teamName', authenticateToken, async (req, res) => {
+router.put('/:teamName', async (req, res) => {
   try {
     const { teamName } = req.params;
     const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -209,7 +282,7 @@ router.put('/:teamName', authenticateToken, async (req, res) => {
       config.description = description;
     }
 
-    await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+    await regeneratePreprompts(config, configPath);
     res.json({ success: true, team: config });
   } catch (error) {
     console.error('Error updating team:', error);
@@ -218,7 +291,7 @@ router.put('/:teamName', authenticateToken, async (req, res) => {
 });
 
 // DELETE /api/teams/:teamName - Delete a team
-router.delete('/:teamName', authenticateToken, async (req, res) => {
+router.delete('/:teamName', async (req, res) => {
   try {
     const { teamName } = req.params;
     const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -242,7 +315,7 @@ router.delete('/:teamName', authenticateToken, async (req, res) => {
 });
 
 // POST /api/teams/:teamName/agents - Add agent to team
-router.post('/:teamName/agents', authenticateToken, async (req, res) => {
+router.post('/:teamName/agents', async (req, res) => {
   try {
     const { teamName } = req.params;
     const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -252,7 +325,7 @@ router.post('/:teamName/agents', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Team not found' });
     }
 
-    const { name: agentName, agentType, model, prompt, cwd, taskFile } = req.body;
+    const { name: agentName, model, prompt } = req.body;
 
     if (!agentName || !agentName.trim()) {
       return res.status(400).json({ error: 'Agent name is required' });
@@ -273,23 +346,32 @@ router.post('/:teamName/agents', authenticateToken, async (req, res) => {
     const newAgent = {
       agentId: `${safeAgentName}@${safeName}`,
       name: safeAgentName,
-      agentType: agentType || 'general-purpose',
+      agentType: 'agent',
       model: model || 'sonnet',
       prompt: prompt || '',
+      preprompt: '',
       color: colors[colorIndex],
       planModeRequired: false,
       joinedAt: Date.now(),
       tmuxPaneId: '',
-      cwd: cwd || '',
+      cwd: '',
       subscriptions: [],
-      taskFile: taskFile || ''
+      taskFile: ''
     };
 
     config.members.push(newAgent);
 
-    await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+    // Create task file
+    const taskFilePath = path.join(getTeamFolder(safeName), `${safeAgentName}.md`);
+    if (!fs.existsSync(taskFilePath)) {
+      await fs.promises.writeFile(taskFilePath, `# Tasks - ${safeAgentName}\n\n`, 'utf8');
+    }
+    newAgent.taskFile = taskFilePath.replace(/\\/g, '/');
 
-    // Create inbox for agent
+    // Regenerate preprompts for ALL members
+    await regeneratePreprompts(config, configPath);
+
+    // Create inbox
     const inboxPath = path.join(TEAMS_DIR, safeName, 'inboxes', `${safeAgentName}.json`);
     ensureDir(path.join(TEAMS_DIR, safeName, 'inboxes'));
     await fs.promises.writeFile(inboxPath, '[]', 'utf8');
@@ -302,7 +384,7 @@ router.post('/:teamName/agents', authenticateToken, async (req, res) => {
 });
 
 // PUT /api/teams/:teamName/agents/:agentName - Update agent config
-router.put('/:teamName/agents/:agentName', authenticateToken, async (req, res) => {
+router.put('/:teamName/agents/:agentName', async (req, res) => {
   try {
     const { teamName, agentName } = req.params;
     const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -320,14 +402,41 @@ router.put('/:teamName/agents/:agentName', authenticateToken, async (req, res) =
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    const { prompt, model, agentType, cwd, taskFile } = req.body;
+    const { prompt, model, preprompt, newName } = req.body;
     if (prompt !== undefined) config.members[agentIndex].prompt = prompt;
     if (model !== undefined) config.members[agentIndex].model = model;
-    if (agentType !== undefined) config.members[agentIndex].agentType = agentType;
-    if (cwd !== undefined) config.members[agentIndex].cwd = cwd;
-    if (taskFile !== undefined) config.members[agentIndex].taskFile = taskFile;
+    if (preprompt !== undefined) config.members[agentIndex].preprompt = preprompt;
 
-    await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+    // Handle rename
+    if (newName && newName !== agentName) {
+      const safeNewName = newName.trim().replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+      if (config.members.find((m, i) => i !== agentIndex && m.name === safeNewName)) {
+        return res.status(409).json({ error: 'Agent with this name already exists' });
+      }
+
+      const oldName = config.members[agentIndex].name;
+      config.members[agentIndex].name = safeNewName;
+      config.members[agentIndex].agentId = `${safeNewName}@${safeName}`;
+
+      // Rename inbox file
+      const oldInbox = path.join(TEAMS_DIR, safeName, 'inboxes', `${oldName}.json`);
+      const newInbox = path.join(TEAMS_DIR, safeName, 'inboxes', `${safeNewName}.json`);
+      if (fs.existsSync(oldInbox)) {
+        await fs.promises.rename(oldInbox, newInbox);
+      }
+
+      // Rename task file
+      const teamFolder = getTeamFolder(safeName);
+      const oldTask = path.join(teamFolder, `${oldName}.md`);
+      const newTask = path.join(teamFolder, `${safeNewName}.md`);
+      if (fs.existsSync(oldTask)) {
+        await fs.promises.rename(oldTask, newTask);
+      }
+      config.members[agentIndex].taskFile = newTask.replace(/\\/g, '/');
+    }
+
+    // Regenerate preprompts for ALL members
+    await regeneratePreprompts(config, configPath);
     res.json({ success: true, agent: config.members[agentIndex] });
   } catch (error) {
     console.error('Error updating agent:', error);
@@ -336,7 +445,7 @@ router.put('/:teamName/agents/:agentName', authenticateToken, async (req, res) =
 });
 
 // DELETE /api/teams/:teamName/agents/:agentName - Remove agent from team
-router.delete('/:teamName/agents/:agentName', authenticateToken, async (req, res) => {
+router.delete('/:teamName/agents/:agentName', async (req, res) => {
   try {
     const { teamName, agentName } = req.params;
     const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -346,16 +455,15 @@ router.delete('/:teamName/agents/:agentName', authenticateToken, async (req, res
       return res.status(404).json({ error: 'Team not found' });
     }
 
-    if (agentName === 'team-lead') {
-      return res.status(400).json({ error: 'Cannot delete the team lead' });
-    }
-
     const configData = await fs.promises.readFile(configPath, 'utf8');
     const config = JSON.parse(configData);
 
-    config.members = config.members.filter(m => m.name !== agentName);
+    const targetAgent = config.members.find(m => m.name === agentName);
+    if (targetAgent && targetAgent.agentType === 'team-lead') {
+      return res.status(400).json({ error: 'Cannot delete the team lead' });
+    }
 
-    await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
+    config.members = config.members.filter(m => m.name !== agentName);
 
     // Remove inbox
     const inboxPath = path.join(TEAMS_DIR, safeName, 'inboxes', `${agentName}.json`);
@@ -363,6 +471,13 @@ router.delete('/:teamName/agents/:agentName', authenticateToken, async (req, res
       await fs.promises.unlink(inboxPath);
     }
 
+    // Remove task file
+    const taskPath = path.join(getTeamFolder(safeName), `${agentName}.md`);
+    if (fs.existsSync(taskPath)) {
+      await fs.promises.unlink(taskPath);
+    }
+
+    await regeneratePreprompts(config, configPath);
     res.json({ success: true });
   } catch (error) {
     console.error('Error deleting agent:', error);
@@ -370,8 +485,8 @@ router.delete('/:teamName/agents/:agentName', authenticateToken, async (req, res
   }
 });
 
-// GET /api/teams/:teamName/agents/:agentName/tasks - Get agent's task file content
-router.get('/:teamName/agents/:agentName/tasks', authenticateToken, async (req, res) => {
+// GET /api/teams/:teamName/agents/:agentName/tasks - Get agent's task file
+router.get('/:teamName/agents/:agentName/tasks', async (req, res) => {
   try {
     const { teamName, agentName } = req.params;
     const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -389,15 +504,12 @@ router.get('/:teamName/agents/:agentName/tasks', authenticateToken, async (req, 
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    if (!agent.taskFile) {
-      return res.json({ content: '', taskFile: '' });
-    }
-
+    const taskFile = agent.taskFile || path.join(getTeamFolder(safeName), `${agentName}.md`).replace(/\\/g, '/');
     try {
-      const content = await fs.promises.readFile(agent.taskFile, 'utf8');
-      res.json({ content, taskFile: agent.taskFile });
+      const content = await fs.promises.readFile(taskFile, 'utf8');
+      res.json({ content, taskFile });
     } catch {
-      res.json({ content: '', taskFile: agent.taskFile, error: 'File not found' });
+      res.json({ content: '', taskFile });
     }
   } catch (error) {
     console.error('Error getting agent tasks:', error);
@@ -406,7 +518,7 @@ router.get('/:teamName/agents/:agentName/tasks', authenticateToken, async (req, 
 });
 
 // PUT /api/teams/:teamName/agents/:agentName/tasks - Update agent's task file
-router.put('/:teamName/agents/:agentName/tasks', authenticateToken, async (req, res) => {
+router.put('/:teamName/agents/:agentName/tasks', async (req, res) => {
   try {
     const { teamName, agentName } = req.params;
     const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
@@ -424,28 +536,85 @@ router.put('/:teamName/agents/:agentName/tasks', authenticateToken, async (req, 
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    const { content, taskFile } = req.body;
-
-    // If taskFile path changed, update config
-    if (taskFile && taskFile !== agent.taskFile) {
-      agent.taskFile = taskFile;
-      await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
-    }
-
-    const filePath = taskFile || agent.taskFile;
-    if (!filePath) {
-      return res.status(400).json({ error: 'No task file path configured' });
-    }
-
-    // Ensure parent directory exists
-    const dir = path.dirname(filePath);
-    ensureDir(dir);
-
+    const { content } = req.body;
+    const filePath = agent.taskFile || path.join(getTeamFolder(safeName), `${agentName}.md`);
+    ensureDir(path.dirname(filePath));
     await fs.promises.writeFile(filePath, content || '', 'utf8');
     res.json({ success: true });
   } catch (error) {
     console.error('Error updating agent tasks:', error);
     res.status(500).json({ error: 'Failed to update agent tasks' });
+  }
+});
+
+// GET /api/teams/:teamName/human-tasks - Get human-tasks.md
+router.get('/:teamName/human-tasks', async (req, res) => {
+  try {
+    const { teamName } = req.params;
+    const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
+    const filePath = path.join(getTeamFolder(safeName), 'human-tasks.md');
+
+    try {
+      const content = await fs.promises.readFile(filePath, 'utf8');
+      res.json({ content, filePath: filePath.replace(/\\/g, '/') });
+    } catch {
+      res.json({ content: '', filePath: filePath.replace(/\\/g, '/') });
+    }
+  } catch (error) {
+    console.error('Error getting human tasks:', error);
+    res.status(500).json({ error: 'Failed to get human tasks' });
+  }
+});
+
+// PUT /api/teams/:teamName/human-tasks - Update human-tasks.md
+router.put('/:teamName/human-tasks', async (req, res) => {
+  try {
+    const { teamName } = req.params;
+    const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
+    const filePath = path.join(getTeamFolder(safeName), 'human-tasks.md');
+
+    const { content } = req.body;
+    ensureDir(path.dirname(filePath));
+    await fs.promises.writeFile(filePath, content || '', 'utf8');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error updating human tasks:', error);
+    res.status(500).json({ error: 'Failed to update human tasks' });
+  }
+});
+
+// POST /api/teams/:teamName/open-folder - Open team folder in file explorer
+router.post('/:teamName/open-folder', async (req, res) => {
+  try {
+    const { teamName } = req.params;
+    const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
+    const teamFolder = getTeamFolder(safeName);
+
+    if (!fs.existsSync(teamFolder)) {
+      return res.status(404).json({ error: 'Team folder not found' });
+    }
+
+    // Open folder based on platform
+    const platform = process.platform;
+    let cmd;
+    if (platform === 'win32') {
+      cmd = `explorer "${teamFolder}"`;
+    } else if (platform === 'darwin') {
+      cmd = `open "${teamFolder}"`;
+    } else {
+      cmd = `xdg-open "${teamFolder}"`;
+    }
+
+    exec(cmd, (err) => {
+      if (err) {
+        console.error('Error opening folder:', err);
+        return res.status(500).json({ error: 'Failed to open folder' });
+      }
+      res.json({ success: true, path: teamFolder.replace(/\\/g, '/') });
+    });
+  } catch (error) {
+    console.error('Error opening folder:', error);
+    res.status(500).json({ error: 'Failed to open folder' });
   }
 });
 
