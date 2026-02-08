@@ -30,7 +30,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "npm run build && npm run server",
-    "release": "./release.sh"
+    "release": "./release.sh",
+    "postinstall": "patch-package"
   },
   "keywords": [
     "claude code",
@@ -105,6 +106,7 @@
     "autoprefixer": "^10.4.16",
     "concurrently": "^8.2.2",
     "node-gyp": "^10.0.0",
+    "patch-package": "^8.0.1",
     "postcss": "^8.4.32",
     "release-it": "^19.0.5",
     "sharp": "^0.34.2",

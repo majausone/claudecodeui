@@ -21,12 +21,39 @@ function getTeamFolder(teamName) {
   return path.join(TEAMS_DIR, teamName);
 }
 
-// Generate preprompt for a given member based on team config
+// Get direct children of an agent (agents whose leader === this agent's name)
+function getChildren(config, memberName) {
+  return config.members.filter(m => m.leader === memberName);
+}
+
+// Get depth of an agent in the hierarchy (root = 0)
+function getDepth(config, member) {
+  let depth = 0, current = member;
+  while (current.leader) {
+    depth++;
+    current = config.members.find(m => m.name === current.leader);
+    if (!current) break;
+  }
+  return depth;
+}
+
+// Check if setting newLeader for agentName would create a cycle
+function wouldCreateCycle(config, agentName, newLeader) {
+  let current = newLeader;
+  while (current) {
+    if (current === agentName) return true;
+    const member = config.members.find(m => m.name === current);
+    current = member?.leader || null;
+  }
+  return false;
+}
+
+// Generate preprompt for a given member based on team config and hierarchy
 function generatePreprompt(config, member) {
   const teamName = config.name;
   const teamFolder = getTeamFolder(teamName).replace(/\\/g, '/');
-  const isLead = member.agentType === 'team-lead';
-  const otherMembers = config.members.filter(m => m.name !== member.name);
+  const isRoot = !member.leader;
+  const children = getChildren(config, member.name);
 
   let preprompt = `You are "${member.name}" in team "${teamName}".`;
 
@@ -34,41 +61,42 @@ function generatePreprompt(config, member) {
     preprompt += ` Team description: ${config.description}.`;
   }
 
-  if (isLead) {
-    const agents = otherMembers.filter(m => m.agentType !== 'team-lead');
-    if (agents.length > 0) {
-      preprompt += `\nYou are the team leader. Your agents are: ${agents.map(a => `"${a.name}" (model: ${a.model})`).join(', ')}.`;
-    } else {
-      preprompt += `\nYou are the team leader. No agents have been added yet.`;
+  // Role identification
+  if (isRoot) {
+    preprompt += `\nYou are the team leader. You report directly to the human.`;
+  } else {
+    preprompt += `\nYour leader is "${member.leader}". You report your results to them.`;
+  }
+
+  // Delegation instructions (for any agent that has children)
+  if (children.length > 0) {
+    preprompt += `\n\n## Your sub-agents`;
+    preprompt += `\nYou supervise: ${children.map(a => `"${a.name}"`).join(', ')}.`;
+    preprompt += `\n\n## How to delegate work`;
+
+    preprompt += `\nUse the Task tool with the agent's name as subagent_type:`;
+    for (const child of children) {
+      preprompt += `\n- Task(subagent_type="${child.name}", prompt="your task here")`;
     }
 
-    if (agents.length > 0) {
-      preprompt += `\n\n## How to delegate work to your agents`;
-      preprompt += `\nUse the Task tool with the agent's name as subagent_type:`;
-      for (const a of agents) {
-        preprompt += `\n- Task(subagent_type="${a.name}", prompt="your task here")`;
-      }
-      preprompt += `\nTo run multiple agents in parallel, call multiple Task tools in a single message. You will wait for all of them to complete, then summarize results to the user.`;
-    }
+    preprompt += `\nTo run multiple agents in parallel, call multiple Task tools in a single message.`;
+    preprompt += `\n\nCRITICAL RULES:`;
+    preprompt += `\n- ALWAYS use the Task tool to delegate work to your sub-agents. NEVER use SendMessage for delegation.`;
+    preprompt += `\n- SendMessage is ONLY for reporting results UP to your leader. Task is for delegating work DOWN to your sub-agents.`;
+    preprompt += `\n- Do NOT do the work yourself. ALWAYS delegate to your sub-agents using Task.`;
+    preprompt += `\n\n## Supervision protocol`;
+    preprompt += `\nReview the work returned by your sub-agents. If it is incomplete or incorrect, call the sub-agent again with Task and specific feedback. Only report results up to your leader (or the human) when you are satisfied that the work is complete and correct.`;
+  }
 
+  // Root leader reads human-tasks.md
+  if (isRoot) {
     preprompt += `\n\nIMPORTANT - Human Tasks (source of truth):`;
     preprompt += `\nRead the file "${teamFolder}/human-tasks.md" at the start of every conversation and periodically while working. This file contains the tasks assigned to you by the human. It is your SOURCE OF TRUTH. You must NEVER edit or write to this file. Only the human can modify it. Always check this file to make sure you haven't drifted from the original objectives.`;
-
-    preprompt += `\n\nYour task file: "${teamFolder}/${member.name}.md"`;
-    preprompt += `\nRead this file every time you are spoken to. Use it to track your progress, notes, and internal task breakdown. If it contains leftover content from a previous session that is unrelated to current work, clean it up.`;
-  } else {
-    const lead = config.members.find(m => m.agentType === 'team-lead');
-    if (lead) {
-      preprompt += ` Your team leader is "${lead.name}".`;
-    }
-    const peers = otherMembers.filter(m => m.agentType !== 'team-lead');
-    if (peers.length > 0) {
-      preprompt += ` Your fellow agents: ${peers.map(a => `"${a.name}"`).join(', ')}.`;
-    }
-
-    preprompt += `\n\nYour task file: "${teamFolder}/${member.name}.md"`;
-    preprompt += `\nRead this file every time you are spoken to. Use it to track your progress, notes, and task status. If it contains leftover content from a previous session that is unrelated to current work, clean it up. Update it as you work.`;
   }
+
+  // Task file (everyone gets one)
+  preprompt += `\n\nYour task file: "${teamFolder}/${member.name}.md"`;
+  preprompt += `\nRead this file every time you are spoken to. Use it to track your progress, notes, and task status. If it contains leftover content from a previous session that is unrelated to current work, clean it up. Update it as you work.`;
 
   return preprompt;
 }
@@ -206,6 +234,7 @@ router.post('/', async (req, res) => {
           agentId: `${safeName}-lead@${safeName}`,
           name: `${safeName}-lead`,
           agentType: 'team-lead',
+          leader: null,
           model: 'opus',
           prompt: '',
           preprompt: '',
@@ -221,11 +250,13 @@ router.post('/', async (req, res) => {
     // Add agents if provided
     if (agents && Array.isArray(agents)) {
       const colors = ['blue', 'green', 'yellow', 'red', 'purple', 'orange'];
+      const rootLeadName = `${safeName}-lead`;
       agents.forEach((agent, index) => {
         config.members.push({
           agentId: `${agent.name}@${safeName}`,
           name: agent.name,
           agentType: 'agent',
+          leader: agent.leader || rootLeadName,
           model: agent.model || 'sonnet',
           prompt: agent.prompt || '',
           preprompt: '',
@@ -325,7 +356,7 @@ router.post('/:teamName/agents', async (req, res) => {
       return res.status(404).json({ error: 'Team not found' });
     }
 
-    const { name: agentName, model, prompt } = req.body;
+    const { name: agentName, model, prompt, leader } = req.body;
 
     if (!agentName || !agentName.trim()) {
       return res.status(400).json({ error: 'Agent name is required' });
@@ -340,6 +371,15 @@ router.post('/:teamName/agents', async (req, res) => {
       return res.status(409).json({ error: 'Agent with this name already exists' });
     }
 
+    // Determine leader: use provided leader, or default to root team-lead
+    const rootLead = config.members.find(m => !m.leader);
+    const agentLeader = leader || (rootLead ? rootLead.name : null);
+
+    // Validate leader exists
+    if (agentLeader && !config.members.find(m => m.name === agentLeader)) {
+      return res.status(400).json({ error: `Leader "${agentLeader}" not found in team` });
+    }
+
     const colors = ['blue', 'green', 'yellow', 'red', 'purple', 'orange'];
     const colorIndex = config.members.length % colors.length;
 
@@ -347,6 +387,7 @@ router.post('/:teamName/agents', async (req, res) => {
       agentId: `${safeAgentName}@${safeName}`,
       name: safeAgentName,
       agentType: 'agent',
+      leader: agentLeader,
       model: model || 'sonnet',
       prompt: prompt || '',
       preprompt: '',
@@ -402,10 +443,24 @@ router.put('/:teamName/agents/:agentName', async (req, res) => {
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    const { prompt, model, preprompt, newName } = req.body;
+    const { prompt, model, preprompt, newName, leader } = req.body;
     if (prompt !== undefined) config.members[agentIndex].prompt = prompt;
     if (model !== undefined) config.members[agentIndex].model = model;
     if (preprompt !== undefined) config.members[agentIndex].preprompt = preprompt;
+
+    // Handle leader change
+    if (leader !== undefined) {
+      if (leader === agentName) {
+        return res.status(400).json({ error: 'Agent cannot be its own leader' });
+      }
+      if (leader && !config.members.find(m => m.name === leader)) {
+        return res.status(400).json({ error: `Leader "${leader}" not found in team` });
+      }
+      if (leader && wouldCreateCycle(config, agentName, leader)) {
+        return res.status(400).json({ error: 'This would create a circular hierarchy' });
+      }
+      config.members[agentIndex].leader = leader || null;
+    }
 
     // Handle rename
     if (newName && newName !== agentName) {
@@ -417,6 +472,13 @@ router.put('/:teamName/agents/:agentName', async (req, res) => {
       const oldName = config.members[agentIndex].name;
       config.members[agentIndex].name = safeNewName;
       config.members[agentIndex].agentId = `${safeNewName}@${safeName}`;
+
+      // Update leader references in children
+      for (const m of config.members) {
+        if (m.leader === oldName) {
+          m.leader = safeNewName;
+        }
+      }
 
       // Rename inbox file
       const oldInbox = path.join(TEAMS_DIR, safeName, 'inboxes', `${oldName}.json`);
@@ -459,8 +521,16 @@ router.delete('/:teamName/agents/:agentName', async (req, res) => {
     const config = JSON.parse(configData);
 
     const targetAgent = config.members.find(m => m.name === agentName);
-    if (targetAgent && targetAgent.agentType === 'team-lead') {
-      return res.status(400).json({ error: 'Cannot delete the team lead' });
+    if (targetAgent && !targetAgent.leader) {
+      return res.status(400).json({ error: 'Cannot delete the root team leader' });
+    }
+
+    // Reassign children of the deleted agent to the deleted agent's leader
+    const parentLeader = targetAgent ? targetAgent.leader : null;
+    for (const m of config.members) {
+      if (m.leader === agentName) {
+        m.leader = parentLeader;
+      }
     }
 
     config.members = config.members.filter(m => m.name !== agentName);

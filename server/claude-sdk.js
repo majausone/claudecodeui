@@ -224,7 +224,7 @@ async function mapCliOptionsToSDK(options = {}) {
   };
 
   // Inject team agent context via systemPrompt.append and agents definitions
-  if (options.teamAgent && !sessionId) {
+  if (options.teamAgent) {
     try {
       const teamsDir = path.join(os.homedir(), '.claude', 'teams');
       const teamConfigPath = path.join(teamsDir, options.teamAgent.teamName, 'config.json');
@@ -283,7 +283,8 @@ async function mapCliOptionsToSDK(options = {}) {
   }
 
   // Enable experimental agent teams if configured
-  if (process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1') {
+  if (process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1' || options.teamAgent) {
+    process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
     sdkOptions.experimentalAgentTeams = true;
     console.log('Agent Teams enabled (experimental)');
   }

@@ -1,8 +1,85 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { X, Users, Plus, Trash2, Edit3, Check, ChevronDown, FileText, UserPlus, Bot, AlertTriangle, ClipboardList, FolderOpen } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { api } from '../utils/api';
+
+// Build a tree structure from the flat members array
+function buildAgentTree(members) {
+  if (!members || members.length === 0) return [];
+  const rootLead = members.find(m => !m.leader);
+  if (!rootLead) {
+    // Backward compat: if no member has leader=null, treat team-lead as root
+    const fallback = members.find(m => m.agentType === 'team-lead');
+    if (fallback) return [buildNode(members, fallback)];
+    return [];
+  }
+  return [buildNode(members, rootLead)];
+}
+
+function buildNode(members, agent) {
+  const children = members.filter(m => m.leader === agent.name);
+  return { ...agent, children: children.map(c => buildNode(members, c)) };
+}
+
+// Get depth of an agent in the hierarchy
+function getAgentDepth(members, agent) {
+  let depth = 0, current = agent;
+  while (current && current.leader) {
+    depth++;
+    current = members.find(m => m.name === current.leader);
+  }
+  return depth;
+}
+
+// Depth-based icon color: gold (root), silver (depth 1), bronze (depth 2+)
+function getDepthColor(depth) {
+  if (depth === 0) return 'text-yellow-500';
+  if (depth === 1) return 'text-gray-400';
+  return 'text-amber-700';
+}
+
+// Role label based on tree position
+function getRoleLabel(agent) {
+  if (!agent.leader) return 'Lead';
+  if (agent.children && agent.children.length > 0) return 'Supervisor';
+  return 'Worker';
+}
+
+function AgentTreeNode({ node, depth, selectedAgent, onSelect, onDelete }) {
+  const isRoot = !node.leader;
+  const role = getRoleLabel(node);
+  return (
+    <>
+      <div
+        style={{ paddingLeft: `${12 + depth * 16}px` }}
+        className={`group flex items-center gap-2 py-2 pr-3 hover:bg-accent cursor-pointer transition-colors ${selectedAgent?.name === node.name ? 'bg-accent' : ''}`}
+        onClick={() => onSelect(node)}
+      >
+        <Bot className={`w-4 h-4 flex-shrink-0 ${getDepthColor(depth)}`} />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-foreground truncate">{node.name}</div>
+          <div className="text-xs text-muted-foreground">{role} &middot; {node.model}</div>
+        </div>
+        {!isRoot && (
+          <button onClick={(e) => { e.stopPropagation(); onDelete(node.name); }} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all">
+            <Trash2 className="w-3 h-3 text-red-500" />
+          </button>
+        )}
+      </div>
+      {node.children && node.children.map(child => (
+        <AgentTreeNode
+          key={child.name}
+          node={child}
+          depth={depth + 1}
+          selectedAgent={selectedAgent}
+          onSelect={onSelect}
+          onDelete={onDelete}
+        />
+      ))}
+    </>
+  );
+}
 
 function TeamsPanel({ isOpen, onClose }) {
   const [teams, setTeams] = useState([]);
@@ -22,6 +99,7 @@ function TeamsPanel({ isOpen, onClose }) {
   const [newAgentName, setNewAgentName] = useState('');
   const [newAgentModel, setNewAgentModel] = useState('sonnet');
   const [newAgentPrompt, setNewAgentPrompt] = useState('');
+  const [newAgentLeader, setNewAgentLeader] = useState('');
 
   // Edit agent
   const [editingAgent, setEditingAgent] = useState(null);
@@ -29,6 +107,7 @@ function TeamsPanel({ isOpen, onClose }) {
   const [editPrompt, setEditPrompt] = useState('');
   const [editPreprompt, setEditPreprompt] = useState('');
   const [editModel, setEditModel] = useState('');
+  const [editLeader, setEditLeader] = useState('');
 
   // Task editing
   const [agentTaskContent, setAgentTaskContent] = useState('');
@@ -133,13 +212,15 @@ function TeamsPanel({ isOpen, onClose }) {
       const res = await api.teams.addAgent(selectedTeam.name, {
         name: newAgentName.trim(),
         model: newAgentModel,
-        prompt: newAgentPrompt
+        prompt: newAgentPrompt,
+        leader: newAgentLeader || undefined
       });
       const data = await res.json();
       if (data.success) {
         setShowCreateAgent(false);
         setNewAgentName('');
         setNewAgentPrompt('');
+        setNewAgentLeader('');
         fetchTeamDetails(selectedTeam.name);
       } else {
         setError(data.error || 'Failed to create agent');
@@ -172,6 +253,7 @@ function TeamsPanel({ isOpen, onClose }) {
     setEditPrompt(agent.prompt || '');
     setEditPreprompt(agent.preprompt || '');
     setEditModel(agent.model || 'sonnet');
+    setEditLeader(agent.leader || '');
   };
 
   const handleSaveAgent = async () => {
@@ -180,7 +262,8 @@ function TeamsPanel({ isOpen, onClose }) {
       const updateData = {
         prompt: editPrompt,
         model: editModel,
-        preprompt: editPreprompt
+        preprompt: editPreprompt,
+        leader: editLeader || null
       };
       if (editName !== editingAgent) {
         updateData.newName = editName;
@@ -282,14 +365,15 @@ function TeamsPanel({ isOpen, onClose }) {
     }
   };
 
-  const getAgentStatusColor = (agent) => {
-    if (agent.agentType === 'team-lead') return 'text-amber-500';
-    return 'text-gray-400';
-  };
+  // Build tree from members for display
+  const agentTree = useMemo(() => {
+    if (!selectedTeam?.members) return [];
+    return buildAgentTree(selectedTeam.members);
+  }, [selectedTeam?.members]);
 
   if (!isOpen) return null;
 
-  const isLead = selectedAgent?.agentType === 'team-lead';
+  const isLead = selectedAgent && !selectedAgent.leader;
 
   return (
     <div className="modal-backdrop fixed inset-0 flex items-center justify-center z-[9999] md:p-4 bg-background/95">
@@ -386,6 +470,12 @@ function TeamsPanel({ isOpen, onClose }) {
                 {showCreateAgent && (
                   <div className="p-3 border-b border-border space-y-2">
                     <Input placeholder="Agent name" value={newAgentName} onChange={(e) => setNewAgentName(e.target.value)} className="h-8 text-sm" autoFocus />
+                    <select value={newAgentLeader} onChange={(e) => setNewAgentLeader(e.target.value)} className="w-full h-8 text-sm rounded-md border border-input bg-background px-2">
+                      <option value="">Reports to: (default root lead)</option>
+                      {(selectedTeam.members || []).map(m => (
+                        <option key={m.name} value={m.name}>Reports to: {m.name}</option>
+                      ))}
+                    </select>
                     <select value={newAgentModel} onChange={(e) => setNewAgentModel(e.target.value)} className="w-full h-8 text-sm rounded-md border border-input bg-background px-2">
                       <option value="opus">Opus 4.6</option>
                       <option value="sonnet">Sonnet 4.5</option>
@@ -400,23 +490,15 @@ function TeamsPanel({ isOpen, onClose }) {
                 )}
 
                 <div className="flex-1 overflow-y-auto">
-                  {(selectedTeam.members || []).map((agent) => (
-                    <div
-                      key={agent.name}
-                      className={`group flex items-center gap-2 px-3 py-2 hover:bg-accent cursor-pointer transition-colors ${selectedAgent?.name === agent.name ? 'bg-accent' : ''}`}
-                      onClick={() => handleSelectAgent(agent)}
-                    >
-                      <Bot className={`w-4 h-4 flex-shrink-0 ${getAgentStatusColor(agent)}`} />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-foreground truncate">{agent.name}</div>
-                        <div className="text-xs text-muted-foreground">{agent.agentType === 'team-lead' ? 'Lead' : 'Agent'} &middot; {agent.model}</div>
-                      </div>
-                      {agent.name !== 'team-lead' && (
-                        <button onClick={(e) => { e.stopPropagation(); handleDeleteAgent(agent.name); }} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-all">
-                          <Trash2 className="w-3 h-3 text-red-500" />
-                        </button>
-                      )}
-                    </div>
+                  {agentTree.map(node => (
+                    <AgentTreeNode
+                      key={node.name}
+                      node={node}
+                      depth={0}
+                      selectedAgent={selectedAgent}
+                      onSelect={handleSelectAgent}
+                      onDelete={handleDeleteAgent}
+                    />
                   ))}
                 </div>
               </div>
@@ -466,7 +548,9 @@ function TeamsPanel({ isOpen, onClose }) {
                       </div>
                       <div>
                         <h3 className="text-sm font-semibold text-foreground">{selectedAgent.name}</h3>
-                        <p className="text-xs text-muted-foreground">{selectedAgent.agentType === 'team-lead' ? 'Lead' : 'Agent'} &middot; {selectedAgent.model}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {selectedAgent.model} &middot; {selectedAgent.leader ? `reports to ${selectedAgent.leader}` : 'reports to human'}
+                        </p>
                       </div>
                     </div>
                     <div className="flex gap-2">
@@ -531,6 +615,21 @@ function TeamsPanel({ isOpen, onClose }) {
                           </select>
                         ) : (
                           <div className="text-sm text-muted-foreground">{selectedAgent.model}</div>
+                        )}
+                      </div>
+
+                      {/* Leader (hierarchy) */}
+                      <div>
+                        <label className="text-sm font-medium text-foreground block mb-1">Reports to</label>
+                        {editingAgent === selectedAgent.name ? (
+                          <select value={editLeader} onChange={(e) => setEditLeader(e.target.value)} className="w-full h-9 text-sm rounded-md border border-input bg-background px-2" disabled={!selectedAgent.leader}>
+                            <option value="">Human (root leader)</option>
+                            {(selectedTeam.members || []).filter(m => m.name !== selectedAgent.name).map(m => (
+                              <option key={m.name} value={m.name}>{m.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="text-sm text-muted-foreground">{selectedAgent.leader || 'Human (root leader)'}</div>
                         )}
                       </div>
 
