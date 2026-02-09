@@ -219,6 +219,11 @@ export const api = {
     openFolder: (teamName) => authenticatedFetch(`/api/teams/${teamName}/open-folder`, {
       method: 'POST',
     }),
+    getAllTasks: (teamName) => authenticatedFetch(`/api/teams/${teamName}/all-tasks`),
+    setAllTasks: (teamName, data) => authenticatedFetch(`/api/teams/${teamName}/set-all-tasks`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   },
 
   // Generic GET method for any endpoint

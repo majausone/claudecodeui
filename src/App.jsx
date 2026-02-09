@@ -65,6 +65,7 @@ function AppContent() {
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showTeams, setShowTeams] = useState(false);
+  const [showSetAllTasks, setShowSetAllTasks] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('agents');
   const [showQuickSettings, setShowQuickSettings] = useState(false);
   const [autoExpandTools, setAutoExpandTools] = useLocalStorage('autoExpandTools', false);
@@ -992,7 +993,9 @@ function AppContent() {
       {/* Teams Panel */}
       <TeamsPanel
         isOpen={showTeams}
-        onClose={() => setShowTeams(false)}
+        onClose={() => { setShowTeams(false); setShowSetAllTasks(false); }}
+        openSetAllTasks={showSetAllTasks}
+        onSetAllTasksClosed={() => setShowSetAllTasks(false)}
       />
 
       {/* Version Upgrade Modal */}

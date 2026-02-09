@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { X, Users, Plus, Trash2, Edit3, Check, ChevronDown, FileText, UserPlus, Bot, AlertTriangle, ClipboardList, FolderOpen } from 'lucide-react';
+import { X, Users, Plus, Trash2, Edit3, Check, ChevronDown, FileText, UserPlus, Bot, AlertTriangle, ClipboardList, FolderOpen, ClipboardEdit } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { api } from '../utils/api';
@@ -81,7 +81,7 @@ function AgentTreeNode({ node, depth, selectedAgent, onSelect, onDelete }) {
   );
 }
 
-function TeamsPanel({ isOpen, onClose }) {
+function TeamsPanel({ isOpen, onClose, openSetAllTasks, onSetAllTasksClosed }) {
   const [teams, setTeams] = useState([]);
   const [selectedTeam, setSelectedTeam] = useState(null);
   const [selectedAgent, setSelectedAgent] = useState(null);
@@ -118,6 +118,13 @@ function TeamsPanel({ isOpen, onClose }) {
   const [humanTaskPath, setHumanTaskPath] = useState('');
   const [humanTaskDirty, setHumanTaskDirty] = useState(false);
 
+  // Set All Tasks modal
+  const [showSetAllTasks, setShowSetAllTasks] = useState(false);
+  const [setAllTasksContent, setSetAllTasksContent] = useState('');
+  const [setAllTasksLoading, setSetAllTasksLoading] = useState(false);
+  const [setAllTasksResult, setSetAllTasksResult] = useState(null);
+  const [replaceOriginal, setReplaceOriginal] = useState(true);
+
   const fetchTeams = useCallback(async () => {
     try {
       setLoading(true);
@@ -148,6 +155,19 @@ function TeamsPanel({ isOpen, onClose }) {
       fetchTeams();
     }
   }, [isOpen, fetchTeams]);
+
+  // Open Set All Tasks modal when triggered externally
+  useEffect(() => {
+    if (openSetAllTasks && isOpen && teams.length > 0) {
+      // Select first team if none selected
+      if (!selectedTeam) {
+        fetchTeamDetails(teams[0].name);
+      }
+      // Open the modal
+      handleOpenSetAllTasks();
+      if (onSetAllTasksClosed) onSetAllTasksClosed();
+    }
+  }, [openSetAllTasks, isOpen, teams]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -356,6 +376,35 @@ function TeamsPanel({ isOpen, onClose }) {
     }
   };
 
+  const handleOpenSetAllTasks = async () => {
+    setShowSetAllTasks(true);
+    setSetAllTasksContent('');
+    setSetAllTasksResult(null);
+    setReplaceOriginal(true);
+  };
+
+  const handleSetAllTasks = async () => {
+    if (!selectedTeam) return;
+    try {
+      setSetAllTasksLoading(true);
+      setSetAllTasksResult(null);
+      const res = await api.teams.setAllTasks(selectedTeam.name, {
+        taskContent: setAllTasksContent,
+        replaceOriginal
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSetAllTasksResult(data.results);
+      } else {
+        setError(data.error || 'Failed to set all tasks');
+      }
+    } catch {
+      setError('Failed to set all tasks');
+    } finally {
+      setSetAllTasksLoading(false);
+    }
+  };
+
   const handleTabChange = async (tab) => {
     setActiveTab(tab);
     if (tab === 'tasks' && selectedAgent) {
@@ -460,9 +509,14 @@ function TeamsPanel({ isOpen, onClose }) {
                   </button>
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-foreground">Agents</span>
-                    <Button variant="ghost" size="sm" onClick={() => setShowCreateAgent(true)} className="h-7 w-7 p-0">
-                      <UserPlus className="w-4 h-4" />
-                    </Button>
+                    <div className="flex items-center gap-0.5">
+                      <Button variant="ghost" size="sm" onClick={handleOpenSetAllTasks} className="h-7 w-7 p-0" title="Set All Tasks">
+                        <ClipboardList className="w-4 h-4" />
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setShowCreateAgent(true)} className="h-7 w-7 p-0" title="Add agent">
+                        <UserPlus className="w-4 h-4" />
+                      </Button>
+                    </div>
                   </div>
                   {selectedTeam.description && <p className="text-xs text-muted-foreground mt-1">{selectedTeam.description}</p>}
                 </div>
@@ -501,6 +555,7 @@ function TeamsPanel({ isOpen, onClose }) {
                     />
                   ))}
                 </div>
+
               </div>
             )}
           </div>
@@ -740,6 +795,71 @@ function TeamsPanel({ isOpen, onClose }) {
           </div>
         </div>
       </div>
+
+      {/* Set All Tasks Modal */}
+      {showSetAllTasks && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50" onClick={() => setShowSetAllTasks(false)}>
+          <div className="bg-background border border-border rounded-lg shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col m-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-border">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                  <ClipboardList className="w-4 h-4" /> Set All Tasks
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Replaces content between <code className="bg-muted px-1 rounded">--TASK--</code> and <code className="bg-muted px-1 rounded">--END TASK--</code> in all team .md files. Files without these markers are skipped.
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setShowSetAllTasks(false)} className="h-7 w-7 p-0">
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {/* New task content */}
+              <div>
+                <span className="text-xs font-medium text-foreground">New task content:</span>
+                <textarea
+                  value={setAllTasksContent}
+                  onChange={(e) => setSetAllTasksContent(e.target.value)}
+                  className="w-full mt-1 text-sm rounded-md border border-input bg-background px-3 py-2 min-h-[250px] resize-y font-mono"
+                  placeholder="Paste the new task content here. This will replace the content between --TASK-- and --END TASK-- markers..."
+                  autoFocus
+                />
+              </div>
+
+              {/* Results */}
+              {setAllTasksResult && (
+                <div className="space-y-1">
+                  <span className="text-xs font-medium text-foreground">Results:</span>
+                  {setAllTasksResult.map((r, i) => (
+                    <div key={i} className={`text-xs px-2 py-1 rounded ${r.status === 'updated' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' : 'bg-gray-50 dark:bg-gray-800 text-muted-foreground'}`}>
+                      <span className="font-mono">{r.file}</span> — {r.status === 'updated' ? 'Updated' : `Skipped (${r.reason})`}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between p-4 border-t border-border">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={replaceOriginal}
+                  onChange={(e) => setReplaceOriginal(e.target.checked)}
+                  className="rounded border-input"
+                />
+                <span className="text-xs text-foreground">Restore original files before replacing</span>
+              </label>
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" className="h-8" onClick={() => setShowSetAllTasks(false)}>Cancel</Button>
+                <Button size="sm" className="h-8" onClick={handleSetAllTasks} disabled={setAllTasksLoading || !setAllTasksContent.trim()}>
+                  {setAllTasksLoading ? 'Saving...' : 'Save All'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

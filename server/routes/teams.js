@@ -688,4 +688,114 @@ router.post('/:teamName/open-folder', async (req, res) => {
   }
 });
 
+// Helper: extract content between --TASK-- and --END TASK-- from a string
+function extractTaskZone(content) {
+  const taskStart = content.indexOf('--TASK--');
+  const taskEnd = content.indexOf('--END TASK--');
+  if (taskStart === -1 || taskEnd === -1 || taskEnd <= taskStart) return null;
+  return content.substring(taskStart + '--TASK--'.length, taskEnd);
+}
+
+// GET /api/teams/:teamName/all-tasks - Read current --TASK-- zones from all team .md files
+router.get('/:teamName/all-tasks', async (req, res) => {
+  try {
+    const { teamName } = req.params;
+    const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
+    const teamFolder = getTeamFolder(safeName);
+
+    if (!fs.existsSync(teamFolder)) {
+      return res.status(404).json({ error: 'Team folder not found' });
+    }
+
+    const files = await fs.promises.readdir(teamFolder);
+    const mdFiles = files.filter(f => f.endsWith('.md'));
+
+    const fileTasks = [];
+    for (const file of mdFiles) {
+      const filePath = path.join(teamFolder, file);
+      const content = await fs.promises.readFile(filePath, 'utf8');
+      const taskZone = extractTaskZone(content);
+      fileTasks.push({
+        file,
+        hasMarkers: taskZone !== null,
+        taskContent: taskZone || ''
+      });
+    }
+
+    res.json({ fileTasks });
+  } catch (error) {
+    console.error('Error reading all tasks:', error);
+    res.status(500).json({ error: 'Failed to read all tasks' });
+  }
+});
+
+// POST /api/teams/:teamName/set-all-tasks - Replace --TASK-- ... --END TASK-- zone in all team .md files
+// If replaceOriginal: first restore each file from originals.json, then replace TASK zone
+router.post('/:teamName/set-all-tasks', async (req, res) => {
+  try {
+    const { teamName } = req.params;
+    const safeName = teamName.replace(/[^a-zA-Z0-9_-]/g, '');
+    const teamFolder = getTeamFolder(safeName);
+
+    if (!fs.existsSync(teamFolder)) {
+      return res.status(404).json({ error: 'Team folder not found' });
+    }
+
+    const { taskContent, replaceOriginal } = req.body;
+    if (taskContent === undefined) {
+      return res.status(400).json({ error: 'taskContent is required' });
+    }
+
+    const newBlock = `--TASK--\n${taskContent}\n--END TASK--`;
+
+    // If replaceOriginal: restore files from originals.json first
+    if (replaceOriginal) {
+      const originalsPath = path.join(teamFolder, 'originals.json');
+      if (fs.existsSync(originalsPath)) {
+        const originalsData = await fs.promises.readFile(originalsPath, 'utf8');
+        const originals = JSON.parse(originalsData);
+        for (const [fileName, originalContent] of Object.entries(originals)) {
+          const filePath = path.join(teamFolder, fileName);
+          await fs.promises.writeFile(filePath, originalContent, 'utf8');
+        }
+      }
+    }
+
+    // Now replace TASK zones in all .md files
+    const files = await fs.promises.readdir(teamFolder);
+    const mdFiles = files.filter(f => f.endsWith('.md'));
+
+    const results = [];
+    for (const file of mdFiles) {
+      const filePath = path.join(teamFolder, file);
+      const content = await fs.promises.readFile(filePath, 'utf8');
+
+      // Check if file has both markers
+      const taskStart = content.indexOf('--TASK--');
+      const taskEnd = content.indexOf('--END TASK--');
+
+      if (taskStart !== -1 && taskEnd !== -1 && taskEnd > taskStart) {
+        // Replace from --TASK-- to --END TASK-- (inclusive)
+        const before = content.substring(0, taskStart);
+        const after = content.substring(taskEnd + '--END TASK--'.length);
+        const newContent = before + newBlock + after;
+        await fs.promises.writeFile(filePath, newContent, 'utf8');
+        results.push({ file, status: 'updated' });
+      } else if (replaceOriginal) {
+        // No markers but replaceOriginal is on: append task block to file
+        const newContent = content.trimEnd() + '\n\n' + newBlock + '\n';
+        await fs.promises.writeFile(filePath, newContent, 'utf8');
+        results.push({ file, status: 'updated' });
+      } else {
+        results.push({ file, status: 'skipped', reason: 'no markers' });
+      }
+    }
+
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error('Error setting all tasks:', error);
+    res.status(500).json({ error: 'Failed to set all tasks' });
+  }
+});
+
 export default router;
